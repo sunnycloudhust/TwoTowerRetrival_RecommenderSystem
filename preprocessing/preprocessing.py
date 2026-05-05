@@ -1,173 +1,68 @@
+# NOTE: preprocessing.py prepares data for training a recommendation model.
+# The output of this module includes:
+# 1. Encoded ratings data:
+#    (user_id, movie_id, rating, timestamp) where user_id and movie_id are mapped to integer indices.
+# 2. User feature table:
+#    user_id (encoded), gender, age, occupation.
+# 3. User history sequences:
+#    fixed-length sequences of positively interacted movies (rating >= 3),
+#    used as input for the User Tower in a Two-Tower recommendation model.
+
 import pandas as pd
 import numpy as np
-import torch
 from sklearn.preprocessing import LabelEncoder
 
 
 class Preprocessor:
-    def __init__(self, seq_len=20, num_neg=4):
+    def __init__(self, seq_len=20):
         self.seq_len = seq_len
-        self.num_neg = num_neg
-    
-        # encoders
-        self.user_enc = LabelEncoder()
-        self.movie_enc = LabelEncoder()
-        self.gender_enc = LabelEncoder()
-        self.age_enc = LabelEncoder()
-        self.job_enc = LabelEncoder()
+        self.user_encoder = LabelEncoder()
+        self.movie_encoder = LabelEncoder()
 
-        self.num_users = None
-        self.num_movies = None
+    def load_data(self, ratings_path, users_path): #this function reads the data of 2 files: ratings and users
+        ratings = pd.read_csv(ratings_path, sep="::", engine="python",
+                              names=["user_id", "movie_id", "rating", "timestamp"])
 
-    # ---------- Load data ----------
-    def load(self, ratings_path, users_path):
-        ratings = pd.read_csv(
-            ratings_path,
-            sep="::",
-            engine="python",
-            names=["user_id", "movie_id", "rating", "timestamp"]
-        )
+        users = pd.read_csv(users_path, sep="::", engine="python",
+                            names=["user_id", "gender", "age", "occupation", "zip"])
+        return ratings, users
 
-        users = pd.read_csv(
-            users_path,
-            sep="::",
-            engine="python",
-            names=["user_id", "gender", "age", "occupation", "zip"]
-        )
+    def encode_ids(self, ratings, users): #this function encodes user_id and movie_id into continuous ranges
+        # sort trước
+        ratings = ratings.sort_values("timestamp").reset_index(drop=True)
+
+        # fit trên ratings
+        ratings["user_id"] = self.user_encoder.fit_transform(ratings["user_id"])
+        ratings["movie_id"] = self.movie_encoder.fit_transform(ratings["movie_id"])
+
+        # chỉ giữ user có trong ratings
+        users = users[users["user_id"].isin(self.user_encoder.classes_)]
+
+        # transform users
+        users["user_id"] = self.user_encoder.transform(users["user_id"])
 
         return ratings, users
 
-    # ---------- Merge & filter ----------
-    def merge_and_filter(self, ratings, users):
-        ratings = ratings[ratings["rating"] > 3]
+    def build_user_history(self, ratings): #this function only takes the rating >= 3 and output the history array of that user, for ex: user 0 → [1, 5, 9]
+        # hyperparameter set
+        ratings = ratings[ratings["rating"] >= 3]
 
-        df = ratings.merge(users, on="user_id")
-        df = df.sort_values(["user_id", "timestamp"])
+        # sort by time
+        ratings = ratings.sort_values("timestamp")
+        user_hist = ratings.groupby("user_id")["movie_id"].apply(list)
+        return user_hist
 
-        return df
+    def pad_sequence(self, seq): #this function normalizes the length of the user_history_sequence to len=20
+        if len(seq) >= self.seq_len:
+            return seq[-self.seq_len:]
+        else:
+            return [0] * (self.seq_len - len(seq)) + seq
 
-    # ---------- Encode ----------
-    def encode(self, df):
-        df["user_id"] = self.user_enc.fit_transform(df["user_id"])
-        df["movie_id"] = self.movie_enc.fit_transform(df["movie_id"])
-
-        df["gender"] = self.gender_enc.fit_transform(df["gender"])
-        df["age"] = self.age_enc.fit_transform(df["age"])
-        df["occupation"] = self.job_enc.fit_transform(df["occupation"])
-
-        self.num_users = df["user_id"].nunique()
-        self.num_movies = df["movie_id"].nunique()
-
-        return df
-
-    # ---------- Build sequences ----------
-    def build_sequences(self, df):
-        user_sequences = {}
-        user_features = {}
-
-        for uid, group in df.groupby("user_id"):
-            movies = group["movie_id"].tolist()
-
-            user_sequences[uid] = movies
-
-            # lấy feature của user (giống nhau cho mọi dòng)
-            user_features[uid] = {
-                "gender": group["gender"].iloc[0],
-                "age": group["age"].iloc[0],
-                "job": group["occupation"].iloc[0],
-            }
-
-        return user_sequences, user_features
-
-    # ---------- Create samples ----------
-    def create_samples(self, user_sequences, user_features):
-        user_ids, seqs, targets = [], [], []
-        genders, ages, jobs = [], [], []
-
-        for uid, movies in user_sequences.items():
-            for i in range(1, len(movies)):
-                hist = movies[max(0, i - self.seq_len):i]
-                target = movies[i]
-
-                user_ids.append(uid)
-                seqs.append(hist)
-                targets.append(target)
-
-                genders.append(user_features[uid]["gender"])
-                ages.append(user_features[uid]["age"])
-                jobs.append(user_features[uid]["job"])
-
-        return user_ids, seqs, targets, genders, ages, jobs
-
-    # ---------- Pre-padding ----------
-    def pad_pre(self, sequences):
-        padded = []
-
-        for seq in sequences:
-            if len(seq) > self.seq_len:
-                seq = seq[-self.seq_len:]
-            else:
-                pad_len = self.seq_len - len(seq)
-                seq = [0] * pad_len + seq
-
-            padded.append(seq)
-
-        return torch.tensor(padded, dtype=torch.long)
-
-    # ---------- Negative sampling ----------
-    def negative_sampling(self, user_ids, seqs, targets, genders, ages, jobs):
-        new_u, new_s, new_t = [], [], []
-        new_g, new_a, new_j = [], [], []
-        labels = []
-
-        for u, s, t, g, a, j in zip(user_ids, seqs, targets, genders, ages, jobs):
-            # positive
-            new_u.append(u)
-            new_s.append(s)
-            new_t.append(t)
-            new_g.append(g)
-            new_a.append(a)
-            new_j.append(j)
-            labels.append(1)
-
-            # negatives
-            for _ in range(self.num_neg):
-                neg = np.random.randint(0, self.num_movies)
-                while neg == t:
-                    neg = np.random.randint(0, self.num_movies)
-
-                new_u.append(u)
-                new_s.append(s)
-                new_t.append(neg)
-                new_g.append(g)
-                new_a.append(a)
-                new_j.append(j)
-                labels.append(0)
-
-        return (
-            torch.tensor(new_u),
-            torch.stack(new_s),
-            torch.tensor(new_t),
-            torch.tensor(new_g),
-            torch.tensor(new_a),
-            torch.tensor(new_j),
-            torch.tensor(labels, dtype=torch.float32),
-        )
-
-    # ---------- Full pipeline ----------
-    def process(self, ratings_path, users_path):
-        ratings, users = self.load(ratings_path, users_path)
-        df = self.merge_and_filter(ratings, users)
-        df = self.encode(df)
-
-        user_sequences, user_features = self.build_sequences(df)
-
-        user_ids, seqs, targets, genders, ages, jobs = self.create_samples(
-            user_sequences, user_features
-        )
-
-        seqs = self.pad_pre(seqs)
-
-        return self.negative_sampling(
-            user_ids, seqs, targets, genders, ages, jobs
-        )
+    def preprocess(self, ratings_path, users_path): #this is the complete pipeline for the works above
+        ratings, users = self.load_data(ratings_path, users_path)
+        ratings, users = self.encode_ids(ratings, users)
+        user_hist = self.build_user_history(ratings)
+        # padding
+        user_hist = user_hist.apply(self.pad_sequence)
+        #convert to numpy
+        user_hist_array = np.stack(user_hist.values)
