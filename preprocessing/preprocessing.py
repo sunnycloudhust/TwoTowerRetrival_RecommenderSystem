@@ -21,10 +21,12 @@ class Preprocessor:
 
     def load_data(self, ratings_path, users_path): #this function reads the data of 2 files: ratings and users
         ratings = pd.read_csv(ratings_path, sep="::", engine="python",
-                              names=["user_id", "movie_id", "rating", "timestamp"])
+                              names=["user_id", "movie_id", "rating", "timestamp"],
+                              dtype={"user_id": int, "movie_id": int, "rating": float, "timestamp": int})
 
         users = pd.read_csv(users_path, sep="::", engine="python",
-                            names=["user_id", "gender", "age", "occupation", "zip"])
+                            names=["user_id", "gender", "age", "occupation", "zip"],
+                            dtype={"user_id": int, "gender": str, "age": int, "occupation": int, "zip": str})
         return ratings, users
 
     def encode_ids(self, ratings, users): #this function encodes user_id and movie_id into continuous ranges
@@ -58,11 +60,21 @@ class Preprocessor:
         else:
             return [0] * (self.seq_len - len(seq)) + seq
 
-    def preprocess(self, ratings_path, users_path): #this is the complete pipeline for the works above
+    def preprocess(self, ratings_path, users_path): 
         ratings, users = self.load_data(ratings_path, users_path)
         ratings, users = self.encode_ids(ratings, users)
+        
         user_hist = self.build_user_history(ratings)
+        num_users = len(self.user_encoder.classes_)
+        
+        # Đảm bảo Series có đủ mọi user_id từ 0 đến num_users - 1. 
+        # Nếu user nào bị mất (do toàn rate < 3), gán cho họ một list rỗng []
+        user_hist = user_hist.reindex(range(num_users)).apply(lambda x: x if isinstance(x, list) else [])
+        
         # padding
         user_hist = user_hist.apply(self.pad_sequence)
-        #convert to numpy
+        
+        # convert to numpy
         user_hist_array = np.stack(user_hist.values)
+        
+        return ratings, users, user_hist_array
