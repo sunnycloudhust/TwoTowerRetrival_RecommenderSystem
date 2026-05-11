@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
-
+import torch.nn as nn
 from preprocessing.preprocessing import Preprocessor
 from models.two_tower import TwoTowerModel
 from dataset import get_dataloader
@@ -186,7 +186,7 @@ def evaluate_metrics(model, test_loader, device, k=20):
         f'NDCG@{k}': ndcg
     }
 
-# --- MAIN TRAINING LOOP ---
+########################## --- MAIN TRAINING LOOP ---##################################
 def main():
     # 1. Configuration (Hyperparameters)
     EPOCHS = 100
@@ -195,7 +195,9 @@ def main():
     SEQ_LEN = 20
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {DEVICE}")
-
+    num_gpus = torch.cuda.device_count()
+    print(f"Number of GPUs available: {num_gpus}")
+    
     # 2. Data preprocessing
     print("Preprocessing data...")
     prep = Preprocessor(seq_len=SEQ_LEN)
@@ -221,18 +223,23 @@ def main():
 
     # 6. Initialize model and optimizer
     print("Initializing model...")
-    model = TwoTowerModel(num_users=num_users, num_movies=num_movies).to(DEVICE)
+    model = TwoTowerModel(num_users=num_users, num_movies=num_movies)
+    
+    # Apply DataParallel if multiple GPUs available
+    if num_gpus > 1:
+        print(f"Đang chạy song song trên {num_gpus} GPUs!")
+        model = nn.DataParallel(model)
+    
+    model.to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=LR)
     
-    # Initialize best metrics for checkpoint saving
-    best_metrics = {'NDCG@20': 0.0}
+    # Checkpoint directory for final model
     checkpoint_dir = 'checkpoints'
     import os
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # 7. Training process
     print("\n--- START TRAINING ---")
-    EVAL_INTERVAL = 50  # Evaluate metrics every 50 batches
     
     for epoch in range(EPOCHS):
         model.train()
@@ -266,78 +273,21 @@ def main():
             # Print loss for each batch
             avg_batch_loss = total_loss / (batch_idx + 1)
             print(f"Epoch {epoch+1}/{EPOCHS} | Batch {batch_idx+1}/{len(train_loader)} | Batch Loss: {loss.item():.4f} | Avg Loss: {avg_batch_loss:.4f}")
-            
-            # Evaluate and print metrics periodically
-            if (batch_idx + 1) % EVAL_INTERVAL == 0:
-                print(f"\n--- Periodic Evaluation at Epoch {epoch+1} Batch {batch_idx+1} ---")
-                print(f"Softmax Loss: {avg_batch_loss:.4f}")
-                
-                model.eval()
-                with torch.no_grad():
-                    # Quick evaluation on test set
-                    all_user_vecs = []
-                    all_item_vecs = []
-                    all_targets = []
-                    
-                    for test_batch in test_loader:
-                        user_inputs_test = {
-                            'user_id': test_batch['user_id'].to(DEVICE),
-                            'gender': test_batch['gender'].to(DEVICE),
-                            'occupation': test_batch['occupation'].to(DEVICE),
-                            'movie_hist': test_batch['user_hist'].to(DEVICE)
-                        }
-                        target_movies_test = test_batch['target_movie'].to(DEVICE)
-                        
-                        user_vec_test, item_vec_test = model(user_inputs_test, target_movies_test)
-                        
-                        all_user_vecs.append(user_vec_test.cpu())
-                        all_item_vecs.append(item_vec_test.cpu())
-                        all_targets.append(target_movies_test.cpu())
-                    
-                    user_vecs = torch.cat(all_user_vecs, dim=0)
-                    item_vecs = torch.cat(all_item_vecs, dim=0)
-                    targets = torch.cat(all_targets, dim=0)
-                    scores = torch.matmul(user_vecs, item_vecs.T)
-                    
-                    # Calculate and print metrics
-                    recall = recall_at_k(targets.numpy(), scores.numpy(), k=20)
-                    precision = precision_at_k(targets.numpy(), scores.numpy(), k=20)
-                    mrr = mrr_at_k(targets.numpy(), scores.numpy(), k=20)
-                    ndcg = ndcg_at_k(targets.numpy(), scores.numpy(), k=20)
-                    
-                    print(f"Recall@20: {recall:.4f} | Precision@20: {precision:.4f}")
-                    print(f"MRR@20: {mrr:.4f} | NDCG@20: {ndcg:.4f}\n")
-                
-                model.train()
 
-        # Evaluate on test set every epoch and save best checkpoint
-        print(f"\n--- Evaluating Metrics @20 for Epoch {epoch+1} ---")
-        metrics = evaluate_metrics(model, test_loader, DEVICE, k=20)
-        for metric_name, metric_value in metrics.items():
-            print(f"{metric_name}: {metric_value:.4f}")
-        
-        # Save checkpoint if NDCG@20 improves
-        if metrics['NDCG@20'] > best_metrics['NDCG@20']:
-            best_metrics['NDCG@20'] = metrics['NDCG@20']
-            checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch+1}_ndcg_{metrics['NDCG@20']:.4f}.pth")
-            torch.save(model.state_dict(), checkpoint_path)
-            print(f"Best checkpoint saved: {checkpoint_path}")
-        
-        # Also save checkpoint for every epoch
+        # Save checkpoint for every epoch (no metric evaluation)
         epoch_checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch+1}.pth")
         torch.save(model.state_dict(), epoch_checkpoint_path)
         print(f"Epoch checkpoint saved: {epoch_checkpoint_path}\n")
 
-    # 8. Final evaluation
-    print("\n--- FINAL RESULTS ---")
+    # Save final model
+    torch.save(model.state_dict(), "two_tower_model.pth")
+    print("\nFinal model saved successfully at 'two_tower_model.pth'!")
+
+    # Final evaluation (run once after training)
+    print("\n--- FINAL EVALUATION @20 ---")
     final_metrics = evaluate_metrics(model, test_loader, DEVICE, k=20)
     for metric_name, metric_value in final_metrics.items():
         print(f"{metric_name}: {metric_value:.4f}")
-
-    # 9. Save final model
-    torch.save(model.state_dict(), "two_tower_model.pth")
-    print(f"\nFinal model saved successfully at 'two_tower_model.pth'!") 
-    print(f"Best NDCG@20 achieved: {best_metrics['NDCG@20']:.4f}")
 
 if __name__ == "__main__":
     main()
