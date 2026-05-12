@@ -30,17 +30,15 @@ class Preprocessor:
         return ratings, users
 
     def encode_ids(self, ratings, users): #this function encodes user_id and movie_id into continuous ranges
-        # sort trước
+        # sort
         ratings = ratings.sort_values("timestamp").reset_index(drop=True)
 
-        # fit trên ratings
+        # fit trên ratings. note that the len of user in user.dat may differ from that in rating.dat
         ratings["user_id"] = self.user_encoder.fit_transform(ratings["user_id"])
         ratings["movie_id"] = self.movie_encoder.fit_transform(ratings["movie_id"])
 
-        # chỉ giữ user có trong ratings
+        # keep users that are in ratings only
         users = users[users["user_id"].isin(self.user_encoder.classes_)]
-
-        # transform users
         users["user_id"] = self.user_encoder.transform(users["user_id"])
 
         return ratings, users
@@ -53,28 +51,21 @@ class Preprocessor:
         ratings = ratings.sort_values("timestamp")
         user_hist = ratings.groupby("user_id")["movie_id"].apply(list)
         return user_hist
-
+    def build_user_hist_array(self, ratings_df):
+        num_users = len(self.user_encoder.classes_)
+        user_hist = self.build_user_history(ratings_df)
+        user_hist = user_hist.reindex(range(num_users)).apply(
+            lambda x: x if isinstance(x, list) else []
+        )
+        user_hist = user_hist.apply(self.pad_sequence)
+        return np.stack(user_hist.values)
     def pad_sequence(self, seq): #this function normalizes the length of the user_history_sequence to len=20
         if len(seq) >= self.seq_len:
             return seq[-self.seq_len:]
         else:
             return [0] * (self.seq_len - len(seq)) + seq
-
-    def preprocess(self, ratings_path, users_path): 
+    
+    def preprocess(self, ratings_path, users_path):
         ratings, users = self.load_data(ratings_path, users_path)
         ratings, users = self.encode_ids(ratings, users)
-        
-        user_hist = self.build_user_history(ratings)
-        num_users = len(self.user_encoder.classes_)
-        
-        # Đảm bảo Series có đủ mọi user_id từ 0 đến num_users - 1. 
-        # Nếu user nào bị mất (do toàn rate < 3), gán cho họ một list rỗng []
-        user_hist = user_hist.reindex(range(num_users)).apply(lambda x: x if isinstance(x, list) else [])
-        
-        # padding
-        user_hist = user_hist.apply(self.pad_sequence)
-        
-        # convert to numpy
-        user_hist_array = np.stack(user_hist.values)
-        
-        return ratings, users, user_hist_array
+        return ratings, users

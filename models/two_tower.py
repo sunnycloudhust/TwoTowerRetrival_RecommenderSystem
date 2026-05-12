@@ -11,7 +11,6 @@ class TwoTowerModel(nn.Module):
         # Khởi tạo Shared Movie Embedding
         self.shared_movie_emb = nn.Embedding(num_movies, 64, padding_idx=0)
         
-        # Khởi tạo 2 tháp
         self.user_tower = UserTower(num_users, num_movies, self.shared_movie_emb)
         self.item_tower = ItemTower(self.shared_movie_emb)
 

@@ -26,11 +26,12 @@ class UserTower(nn.Module):
         # movie_hist: (batch, seq_len) -> (batch, seq_len, 64)
         m = self.movie_emb(movie_hist)
         
-        # Pooling: có thể dùng mask để bỏ qua các giá trị 0 nếu cần kỹ hơn
+        # Pooling: batch seqlen 64 -> batch_size, 64
         hist = m.mean(dim=1)
 
         x = torch.cat([u, g, o, hist], dim=1)
         user_vector = self.mlp(x)
+        
 
         # L2 Normalization để tính Cosine Similarity dễ dàng hơn
         return torch.nn.functional.normalize(user_vector, p=2, dim=1)
