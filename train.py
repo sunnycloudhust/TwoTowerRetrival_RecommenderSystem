@@ -131,6 +131,6 @@ def train(model, train_loader, optimizer, device,
         if avg_epoch_loss < best_loss:
             best_loss = avg_epoch_loss
             save_checkpoint(best_checkpoint_path, model, optimizer, epoch, best_loss, preprocessor)
-            print(f"  ✓ New best loss saved!\n")
+            print(f"New best loss saved at best_checkpoint_path\n")
 
     return best_checkpoint_path

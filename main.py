@@ -30,9 +30,6 @@ def main():
         "checkpoint_dir": "checkpoints"
     }
 
-    # ---------------------------------------------------------
-    # 2. Tiền xử lý dữ liệu
-    # ---------------------------------------------------------
     print("\nPreprocessing data.")
     prep = Preprocessor(seq_len=HYPERPARAMS["seq_len"])
     
