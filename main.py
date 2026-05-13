@@ -25,7 +25,7 @@ def main():
         "max_genres": 5,
         "batch_size": 500,
         "lr": 1e-3,
-        "epochs": 50,
+        "epochs": 200,
         "temperature": 0.07,
         "checkpoint_dir": "checkpoints"
     }
@@ -83,7 +83,6 @@ def main():
     # 6. Đánh giá (Evaluate)
     # ---------------------------------------------------------
     print("\nEvaluating on test set")
-    # Load lại weights tốt nhất vừa lưu để test
     best_model_path = "checkpoints/best_checkpoint.pth"
     metrics = evaluate(
         model=model,
