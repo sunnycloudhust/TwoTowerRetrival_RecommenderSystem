@@ -3,20 +3,33 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class ItemTower(nn.Module):
-    def __init__(self, movie_emb_layer):
+    def __init__(self, movie_emb_layer, genre_emb_layer):
         super().__init__()
         self.movie_emb = movie_emb_layer
+        self.genre_emb = genre_emb_layer # Nhận layer có padding_idx=0
         
+        # Giả sử movie_emb=64, genre_emb=16 -> Tổng input là 80
         self.mlp = nn.Sequential(
-            nn.Linear(64, 64),
+            nn.Linear(64 + 16, 128),
             nn.ReLU(),
-            nn.Linear(64, 64)
+            nn.Linear(128, 64) # Output bắt buộc là 64 để khớp với User Tower
         )
 
-    def forward(self, movie_id):
-        # movie_id đã được cộng 1 ở preprocessing để tránh ID 0
-        item_vector = self.movie_emb(movie_id) 
-        item_vector = self.mlp(item_vector)
+    def forward(self, movie_id, movie_genres):
+        """
+        Args:
+            movie_id: Tensor (B,)
+            movie_genres: Tensor (B, max_genres) truy xuất từ genre_matrix
+        """
+        id_vector = self.movie_emb(movie_id) # (B, 64)
         
-        # L2 Normalize (Phải giống hệt User Tower)
+        # Masked Pooling cho Genres (Gộp các véc-tơ thể loại của phim)
+        g_emb = self.genre_emb(movie_genres) # (B, max_genres, 16)
+        mask = (movie_genres != 0).float().unsqueeze(-1)
+        genre_vector = (g_emb * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1) # (B, 16)
+        
+        # Nối ID phim và Thuộc tính phim
+        item_features = torch.cat([id_vector, genre_vector], dim=1) # (B, 80)
+        item_vector = self.mlp(item_features)
+        
         return F.normalize(item_vector, p=2, dim=1)

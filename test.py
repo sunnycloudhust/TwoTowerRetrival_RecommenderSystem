@@ -3,58 +3,49 @@ import numpy as np
 import torch.nn as nn
 from tqdm import tqdm
 
-
 # ---------------------------------------------------------------------------
-# METRICS COMPUTATION (OPTIMIZED)
+# METRICS COMPUTATION
 # ---------------------------------------------------------------------------
 
 def compute_all_metrics_optimized(targets, topk_indices, k=20):
-    """Tính toán Recall, Precision, MRR, NDCG trong một vòng lặp."""
+    """Tính toán Recall, Precision, MRR, NDCG chuẩn cho Leave-One-Out."""
     recalls, precisions, mrrs, ndcgs = [], [], [], []
     top_k_matrix = topk_indices[:, :k] 
     
     for i in range(len(targets)):
-        relevant = {targets[i]} if isinstance(targets[i], (int, np.integer)) else set(targets[i])
-        if not relevant:
-            recalls.append(0.0)
-            precisions.append(0.0)
-            mrrs.append(0.0)
-            ndcgs.append(0.0)
-            continue
-            
+        target_item = targets[i]
         pred_row = top_k_matrix[i]
-        hits = relevant & set(pred_row)
         
-        # Recall & Precision
-        recalls.append(len(hits) / len(relevant))
-        precisions.append(len(hits) / k)
+        # Kiểm tra hit
+        hit = (target_item in pred_row)
+        
+        # Recall & Precision (Trong Leave-One-Out, len(relevant) luôn = 1)
+        recalls.append(1.0 if hit else 0.0)
+        precisions.append((1.0 / k) if hit else 0.0)
         
         # MRR & NDCG
-        mrr, dcg = 0.0, 0.0
-        for rank, item in enumerate(pred_row, 1):
-            if item in relevant:
-                if mrr == 0.0:
-                    mrr = 1.0 / rank
-                dcg += 1.0 / np.log2(rank + 1)
-                
-        idcg = sum(1.0 / np.log2(r + 1) for r in range(1, min(len(relevant), k) + 1))
+        mrr, ndcg = 0.0, 0.0
+        if hit:
+            # Tìm vị trí của item đúng (rank bắt đầu từ 1)
+            rank = np.where(pred_row == target_item)[0][0] + 1
+            mrr = 1.0 / rank
+            ndcg = 1.0 / np.log2(rank + 1)
+            
         mrrs.append(mrr)
-        ndcgs.append(dcg / idcg if idcg > 0 else 0.0)
+        ndcgs.append(ndcg) # IDCG luôn = 1 vì chỉ có 1 item đúng
         
     return {
         f"Recall@{k}": float(np.mean(recalls)),
-        f"Precision@{k}": float(np.mean(precisions)),
         f"MRR@{k}": float(np.mean(mrrs)),
         f"NDCG@{k}": float(np.mean(ndcgs))
     }
 
-
 # ---------------------------------------------------------------------------
-# TOPK COMPUTATION (MEMORY TILING - OPTIMIZED)
+# TOP-K COMPUTATION
 # ---------------------------------------------------------------------------
 
 def compute_topk_batched(user_vecs, item_vecs, k=20, batch_size=512):
-    """Tính Top-K bằng memory tiling để tối ưu cache."""
+    """Tính Top-K bằng Dot Product trên toàn bộ kho phim."""
     num_users = user_vecs.size(0)
     topk_indices_list = []
     item_vecs_t = item_vecs.T 
@@ -63,95 +54,88 @@ def compute_topk_batched(user_vecs, item_vecs, k=20, batch_size=512):
         for start_idx in range(0, num_users, batch_size):
             end_idx = min(start_idx + batch_size, num_users)
             user_batch = user_vecs[start_idx:end_idx]
+            
+            # Tính scores: (Batch_size, 64) x (64, Num_Movies) -> (Batch_size, Num_Movies)
             batch_scores = torch.matmul(user_batch, item_vecs_t)
             _, batch_topk = torch.topk(batch_scores, k=k, dim=-1)
             topk_indices_list.append(batch_topk.cpu())
 
     return torch.cat(topk_indices_list, dim=0).numpy()
 
-
 # ---------------------------------------------------------------------------
 # EVALUATE FUNCTION
 # ---------------------------------------------------------------------------
 
-def evaluate(model, test_loader, device, checkpoint_path=None, k=20):
+def evaluate(model, test_loader, genre_matrix, device, checkpoint_path=None, k=20):
     """
-    Evaluate model với checkpoint loading + tối ưu metrics.
-    
-    Args:
-        checkpoint_path: Nếu có, load weights từ checkpoint trước evaluate
-        k: Top-K để evaluate
-    
-    Returns:
-        dict: Recall@k, Precision@k, MRR@k, NDCG@k
+    Hàm đánh giá mô hình toàn diện.
     """
-    
-    # ── Load checkpoint nếu có ──────────────────────────────────────────────
+    # 1. Load weights nếu được yêu cầu
     if checkpoint_path is not None:
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        state_dict = checkpoint["model_state"] if "model_state" in checkpoint else checkpoint
         
-        # Extract state_dict từ checkpoint
-        if isinstance(checkpoint, dict) and "model_state" in checkpoint:
-            state_dict = checkpoint["model_state"]
-            epoch_info = checkpoint.get("epoch", -1)
-            best_loss  = checkpoint.get("best_loss", float("inf"))
-            print(f"  ✓ Loaded checkpoint from epoch {epoch_info+1} (best loss: {best_loss:.4f})")
-        else:
-            # Checkpoint cũ format
-            state_dict = checkpoint
-            print("  ✓ Loaded checkpoint (old format)")
-
         # Xử lý DataParallel mismatch
         is_parallel = isinstance(model, nn.DataParallel)
         has_module_prefix = any(key.startswith("module.") for key in state_dict.keys())
-
         if is_parallel and not has_module_prefix:
             state_dict = {"module." + key: value for key, value in state_dict.items()}
         elif not is_parallel and has_module_prefix:
             state_dict = {key.replace("module.", "", 1): value for key, value in state_dict.items()}
-
-        model.load_state_dict(state_dict)
-
-    # ── Inference ───────────────────────────────────────────────────────────
-    model.eval()
-    all_user_vecs, all_item_vecs, all_targets = [], [], []
-
-    print(f"\n[1/3] Extracting embeddings...")
-    with torch.no_grad():
-        for batch in tqdm(test_loader, desc="Inference", disable=False):
-            user_inputs = {
-                "user_id":    batch["user_id"].to(device),
-                "gender":     batch["gender"].to(device),
-                "occupation": batch["occupation"].to(device),
-                "movie_hist": batch["user_hist"].to(device),
-            }
-            target_movies = batch["target_movie"].to(device)
-            user_vec, item_vec = model(user_inputs, target_movies)
             
-            all_user_vecs.append(user_vec.cpu())
-            all_item_vecs.append(item_vec.cpu())
-            all_targets.append(target_movies.cpu())
+        model.load_state_dict(state_dict)
+        print(f"  ✓ Model weights loaded from {checkpoint_path}")
 
-    user_vecs = torch.cat(all_user_vecs, dim=0)
-    item_vecs = torch.cat(all_item_vecs, dim=0)
+    model.eval()
+
+    # 2. Xây dựng véc-tơ cho TOÀN BỘ KHO PHIM (Candidate Pool)
+    print(f"\n[1/3] Trích xuất embedding kho phim...")
+    num_movies = genre_matrix.shape[0]
+    all_movie_ids = torch.arange(num_movies).to(device)
+    all_movie_genres = torch.tensor(genre_matrix, dtype=torch.long).to(device)
+    
+    global_item_vecs = []
+    with torch.no_grad():
+        for i in range(0, num_movies, 512):
+            end_i = min(i + 512, num_movies)
+            # Chỉ sử dụng Tháp Item để lấy véc-tơ đại diện phim
+            item_vec = model.item_tower(all_movie_ids[i:end_i], all_movie_genres[i:end_i])
+            global_item_vecs.append(item_vec.cpu())
+    
+    global_item_vecs = torch.cat(global_item_vecs, dim=0) # (Total_Movies, 64)
+
+    # 3. Trích xuất véc-tơ cho User trong tập Test
+    print(f"[2/3] Trích xuất embedding người dùng tập Test...")
+    all_user_vecs, all_targets = [], []
+    
+    with torch.no_grad():
+        for batch in tqdm(test_loader, desc="Inference"):
+            u_in = batch["user_inputs"]
+            # Chỉ sử dụng Tháp User
+            user_vec = model.user_tower(
+                u_in["user_id"].to(device), 
+                u_in["gender"].to(device), 
+                u_in["age"].to(device),
+                u_in["occupation"].to(device), 
+                u_in["movie_hist"].to(device)
+            )
+            all_user_vecs.append(user_vec.cpu())
+            all_targets.append(batch["item_inputs"]["target_movie"])
+
+    user_vecs = torch.cat(all_user_vecs, dim=0) # (Test_Users, 64)
     targets   = torch.cat(all_targets,   dim=0).numpy()
 
-    print(f"  User vectors shape: {user_vecs.shape}")
-    print(f"  Item vectors shape: {item_vecs.shape}")
-
-    # ── Tính Top-K ──────────────────────────────────────────────────────────
-    print(f"\n[2/3] Computing Top-{k} rankings...")
-    topk_indices = compute_topk_batched(user_vecs, item_vecs, k=k, batch_size=512)
-
-    # ── Tính metrics ────────────────────────────────────────────────────────
-    print(f"\n[3/3] Computing metrics...")
+    # 4. Tính toán Rank và Metrics
+    print(f"[3/3] Đang tính toán Top-{k} và Metrics...")
+    topk_indices = compute_topk_batched(user_vecs, global_item_vecs, k=k)
     metrics = compute_all_metrics_optimized(targets, topk_indices, k=k)
 
-    print(f"\n{'='*50}")
-    print(f"EVALUATION RESULTS @{k}")
-    print(f"{'='*50}")
-    for name, value in metrics.items():
-        print(f"  {name}: {value:.4f}")
-    print(f"{'='*50}\n")
+    # In kết quả
+    print(f"\n{'='*40}")
+    print(f"KẾT QUẢ ĐÁNH GIÁ (K={k})")
+    print(f"{'='*40}")
+    for name, val in metrics.items():
+        print(f"  {name:15}: {val:.4f}")
+    print(f"{'='*40}\n")
 
     return metrics
