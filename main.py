@@ -84,6 +84,7 @@ def main():
     # ---------------------------------------------------------
     print("\nEvaluating on test set")
     # Load lại weights tốt nhất vừa lưu để test
+    best_model_path = "checkpoints/best_checkpoint.pth"
     metrics = evaluate(
         model=model,
         test_loader=test_loader,
