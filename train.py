@@ -8,15 +8,13 @@ import torch.nn as nn
 # LOSS
 # ---------------------------------------------------------------------------
 
-def in_batch_softmax_loss(user_vecs, item_vecs, item_freq=None, temperature=0.1):
-
+def in_batch_softmax_loss(user_vecs, item_vecs, temperature=0.05):
+    """
+    In-batch Softmax Loss.
+    Temperature nhỏ hơn (0.05) → harder negatives → learning tốt hơn.
+    """
     logits = torch.matmul(user_vecs, item_vecs.T) / temperature
-
-    if item_freq is not None:
-        log_freq = torch.log(item_freq.to(user_vecs.device) + 1e-8)
-        logits = logits - log_freq.unsqueeze(0)
-
-    labels = torch.arange(user_vecs.size(0)).to(user_vecs.device)
+    labels = torch.arange(user_vecs.size(0), device=user_vecs.device)
     return F.cross_entropy(logits, labels)
 
 
@@ -25,17 +23,19 @@ def in_batch_softmax_loss(user_vecs, item_vecs, item_freq=None, temperature=0.1)
 # ---------------------------------------------------------------------------
 
 def save_checkpoint(path, model, optimizer, epoch, best_loss):
+    """Lưu đầy đủ trạng thái: model, optimizer, epoch, best_loss."""
     base_model = model.module if isinstance(model, nn.DataParallel) else model
     
     torch.save({
         "epoch":           epoch,
         "best_loss":       best_loss,
-        "model_state":     base_model.state_dict(), # Luôn sạch sẽ
+        "model_state":     base_model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
     }, path)
 
 
 def load_checkpoint(path, model, optimizer, device):
+    """Load checkpoint + xử lý DataParallel mismatch."""
     checkpoint = torch.load(path, map_location=device, weights_only=False)
 
     if "model_state" in checkpoint:
@@ -48,15 +48,13 @@ def load_checkpoint(path, model, optimizer, device):
         start_epoch = 0
         best_loss   = float("inf")
 
-    # ── Xử lý mismatch DataParallel / non-DataParallel ───────────────────────
-    is_parallel      = isinstance(model, torch.nn.DataParallel)
+    # Xử lý mismatch DataParallel / non-DataParallel
+    is_parallel      = isinstance(model, nn.DataParallel)
     has_module_prefix = any(k.startswith("module.") for k in state_dict.keys())
 
     if is_parallel and not has_module_prefix:
-        # Checkpoint lưu không có DataParallel → thêm "module." vào key
         state_dict = {"module." + k: v for k, v in state_dict.items()}
     elif not is_parallel and has_module_prefix:
-        # Checkpoint lưu có DataParallel → bỏ "module." khỏi key
         state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
 
     model.load_state_dict(state_dict)
@@ -71,15 +69,16 @@ def load_checkpoint(path, model, optimizer, device):
 # ---------------------------------------------------------------------------
 
 def train(model, train_loader, optimizer, device,
-          epochs, checkpoint_dir, temperature=0.1, resume=False):
+          epochs, checkpoint_dir, temperature=0.05, resume=False):
     """
-    Huấn luyện model, hỗ trợ resume từ best_checkpoint.pth.
-
+    Huấn luyện model (chỉ track loss, không test metrics).
+    Test metrics chỉ chạy 1 lần sau khi training xong.
+    
     Args:
-        resume (bool): True → load best_checkpoint.pth và train tiếp.
-
+        resume: True → load best_checkpoint.pth và train tiếp
+    
     Returns:
-        str: đường dẫn tới best_checkpoint.pth đã lưu.
+        str: đường dẫn best_checkpoint.pth
     """
     os.makedirs(checkpoint_dir, exist_ok=True)
     best_checkpoint_path = os.path.join(checkpoint_dir, "best_checkpoint.pth")
@@ -87,7 +86,7 @@ def train(model, train_loader, optimizer, device,
     start_epoch = 0
     best_loss   = float("inf")
 
-    # ── Resume ───────────────────────────────────────────────────────────────
+    # Resume nếu cần
     if resume:
         if os.path.exists(best_checkpoint_path):
             print("\nResuming training from checkpoint...")
@@ -95,9 +94,8 @@ def train(model, train_loader, optimizer, device,
                 best_checkpoint_path, model, optimizer, device
             )
         else:
-            print("\n[Warning] Best checkpoint.pth not found. Train from sratch")
+            print("\n[Warning] Best checkpoint.pth not found. Train from scratch.")
 
-    # ── Training loop ─────────────────────────────────────────────────────────
     print("\n--- START TRAINING ---")
     for epoch in range(start_epoch, epochs):
         model.train()
@@ -120,23 +118,26 @@ def train(model, train_loader, optimizer, device,
 
             total_loss += loss.item()
             avg_batch_loss = total_loss / (batch_idx + 1)
-            print(
-                f"Epoch {epoch+1}/{epochs} | "
-                f"Batch {batch_idx+1}/{len(train_loader)} | "
-                f"Batch Loss: {loss.item():.4f} | "
-                f"Avg Loss: {avg_batch_loss:.4f}"
-            )
+            
+            # In progress mỗi 10 batches
+            if (batch_idx + 1) % 10 == 0 or batch_idx == 0:
+                print(
+                    f"Epoch {epoch+1}/{epochs} | "
+                    f"Batch {batch_idx+1}/{len(train_loader)} | "
+                    f"Batch Loss: {loss.item():.4f} | "
+                    f"Avg Loss: {avg_batch_loss:.4f}"
+                )
 
         avg_epoch_loss = total_loss / len(train_loader)
-        print(f"\nEpoch {epoch+1} complete — Avg Epoch Loss: {avg_epoch_loss:.4f}")
+        print(f"\nEpoch {epoch+1} complete — Train Loss: {avg_epoch_loss:.4f}")
 
-        # ── Lưu best checkpoint ───────────────────────────────────────────────
+        # ── Lưu best checkpoint theo training loss ───────────────────────────
         if avg_epoch_loss < best_loss:
             best_loss = avg_epoch_loss
             save_checkpoint(best_checkpoint_path, model, optimizer, epoch, best_loss)
-            print(f"  ✓ New best loss ({best_loss:.4f}) — saved: {best_checkpoint_path}\n")
+            print(f"  ✓ New best loss ({best_loss:.4f}) — saved checkpoint\n")
         else:
-            print(f"  – No improvement (best: {best_loss:.4f})\n")
+            print(f"  – No improvement (best loss: {best_loss:.4f})\n")
 
     print("--- TRAINING COMPLETE ---")
     return best_checkpoint_path

@@ -5,21 +5,21 @@ from tqdm import tqdm
 
 
 # ---------------------------------------------------------------------------
-# 1. TỐI ƯU HÓA TÍNH TOÁN METRICS (Duyệt mảng 1 lần duy nhất)
+# METRICS COMPUTATION (OPTIMIZED)
 # ---------------------------------------------------------------------------
 
 def compute_all_metrics_optimized(targets, topk_indices, k=20):
-    """
-    Tính toán đồng thời Recall, Precision, MRR, NDCG từ kết quả Top-K.
-    """
+    """Tính toán Recall, Precision, MRR, NDCG trong một vòng lặp."""
     recalls, precisions, mrrs, ndcgs = [], [], [], []
     top_k_matrix = topk_indices[:, :k] 
     
     for i in range(len(targets)):
-        # Target có thể là một ID đơn lẻ hoặc một tập hợp
         relevant = {targets[i]} if isinstance(targets[i], (int, np.integer)) else set(targets[i])
         if not relevant:
-            recalls.append(0.0); precisions.append(0.0); mrrs.append(0.0); ndcgs.append(0.0)
+            recalls.append(0.0)
+            precisions.append(0.0)
+            mrrs.append(0.0)
+            ndcgs.append(0.0)
             continue
             
         pred_row = top_k_matrix[i]
@@ -50,47 +50,58 @@ def compute_all_metrics_optimized(targets, topk_indices, k=20):
 
 
 # ---------------------------------------------------------------------------
-# 2. HÀM TÍNH TOP-K BẰNG KỸ THUẬT MEMORY TILING (Siêu tốc)
+# TOPK COMPUTATION (MEMORY TILING - OPTIMIZED)
 # ---------------------------------------------------------------------------
 
 def compute_topk_batched(user_vecs, item_vecs, k=20, batch_size=512):
-    """
-    Nhân ma trận theo khối để tối ưu hóa CPU Cache và giảm thiểu độ trễ bộ nhớ.
-    """
+    """Tính Top-K bằng memory tiling để tối ưu cache."""
     num_users = user_vecs.size(0)
     topk_indices_list = []
     item_vecs_t = item_vecs.T 
 
     with torch.no_grad():
-        # Duyệt qua từng khối User
         for start_idx in range(0, num_users, batch_size):
             end_idx = min(start_idx + batch_size, num_users)
             user_batch = user_vecs[start_idx:end_idx]
-            
-            # Nhân ma trận trên một khối nhỏ (Rất nhanh trên CPU)
             batch_scores = torch.matmul(user_batch, item_vecs_t)
-            
-            # Trích xuất Top-K ngay lập tức
             _, batch_topk = torch.topk(batch_scores, k=k, dim=-1)
-            
             topk_indices_list.append(batch_topk.cpu())
 
     return torch.cat(topk_indices_list, dim=0).numpy()
 
 
 # ---------------------------------------------------------------------------
-# 3. HÀM EVALUATE CHÍNH
+# EVALUATE FUNCTION
 # ---------------------------------------------------------------------------
 
 def evaluate(model, test_loader, device, checkpoint_path=None, k=20):
     """
-    Hàm đánh giá mô hình Two-Tower tối ưu hóa cho cả GPU và CPU (MacBook).
+    Evaluate model với checkpoint loading + tối ưu metrics.
+    
+    Args:
+        checkpoint_path: Nếu có, load weights từ checkpoint trước evaluate
+        k: Top-K để evaluate
+    
+    Returns:
+        dict: Recall@k, Precision@k, MRR@k, NDCG@k
     """
-    # ── Nạp trọng số & Xử lý tương thích DataParallel ───────────────────────
+    
+    # ── Load checkpoint nếu có ──────────────────────────────────────────────
     if checkpoint_path is not None:
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        state_dict = checkpoint["model_state"] if isinstance(checkpoint, dict) and "model_state" in checkpoint else checkpoint
+        
+        # Extract state_dict từ checkpoint
+        if isinstance(checkpoint, dict) and "model_state" in checkpoint:
+            state_dict = checkpoint["model_state"]
+            epoch_info = checkpoint.get("epoch", -1)
+            best_loss  = checkpoint.get("best_loss", float("inf"))
+            print(f"  ✓ Loaded checkpoint from epoch {epoch_info+1} (best loss: {best_loss:.4f})")
+        else:
+            # Checkpoint cũ format
+            state_dict = checkpoint
+            print("  ✓ Loaded checkpoint (old format)")
 
+        # Xử lý DataParallel mismatch
         is_parallel = isinstance(model, nn.DataParallel)
         has_module_prefix = any(key.startswith("module.") for key in state_dict.keys())
 
@@ -100,15 +111,14 @@ def evaluate(model, test_loader, device, checkpoint_path=None, k=20):
             state_dict = {key.replace("module.", "", 1): value for key, value in state_dict.items()}
 
         model.load_state_dict(state_dict)
-        print(f"  ✓ Loaded best checkpoint: {checkpoint_path}")
 
-    # ── Inference trích xuất Embedding ───────────────────────────────────────
+    # ── Inference ───────────────────────────────────────────────────────────
     model.eval()
     all_user_vecs, all_item_vecs, all_targets = [], [], []
 
-    print("\n[1/3] Đang trích xuất Embedding (Inference)...")
+    print(f"\n[1/3] Extracting embeddings...")
     with torch.no_grad():
-        for batch in tqdm(test_loader, desc="Inference"):
+        for batch in tqdm(test_loader, desc="Inference", disable=False):
             user_inputs = {
                 "user_id":    batch["user_id"].to(device),
                 "gender":     batch["gender"].to(device),
@@ -126,17 +136,22 @@ def evaluate(model, test_loader, device, checkpoint_path=None, k=20):
     item_vecs = torch.cat(all_item_vecs, dim=0)
     targets   = torch.cat(all_targets,   dim=0).numpy()
 
-    # ── Tính toán Top-K (Sử dụng kỹ thuật Tiling tối ưu) ──────────────────────
-    print(f"\n[2/3] Đang tính toán Top-{k} Rankings (Memory Tiling Mode)...")
-    # Batch_size=512 là con số tối ưu để giữ dữ liệu trong CPU Cache
+    print(f"  User vectors shape: {user_vecs.shape}")
+    print(f"  Item vectors shape: {item_vecs.shape}")
+
+    # ── Tính Top-K ──────────────────────────────────────────────────────────
+    print(f"\n[2/3] Computing Top-{k} rankings...")
     topk_indices = compute_topk_batched(user_vecs, item_vecs, k=k, batch_size=512)
 
-    # ── Tính toán Metrics ────────────────────────────────────────────────────
-    print(f"\n[3/3] Đang tổng hợp Metrics...")
+    # ── Tính metrics ────────────────────────────────────────────────────────
+    print(f"\n[3/3] Computing metrics...")
     metrics = compute_all_metrics_optimized(targets, topk_indices, k=k)
 
-    print(f"\n--- KẾT QUẢ ĐÁNH GIÁ @{k} ---")
+    print(f"\n{'='*50}")
+    print(f"EVALUATION RESULTS @{k}")
+    print(f"{'='*50}")
     for name, value in metrics.items():
         print(f"  {name}: {value:.4f}")
+    print(f"{'='*50}\n")
 
     return metrics

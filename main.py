@@ -6,7 +6,7 @@ import torch.optim as optim
 from preprocessing.preprocessing import Preprocessor
 from models.two_tower import TwoTowerModel
 from dataset import get_dataloader
-from train import train
+from train import train as train_model
 from test import evaluate
 
 
@@ -15,14 +15,14 @@ from test import evaluate
 # ---------------------------------------------------------------------------
 
 CONFIG = {
-    "mode":         "test",        
     "epochs":       100,
-    "batch_size":   1024,
-    "lr":           0.01,
+    "batch_size":   512,
+    "lr":           0.001,
+    "weight_decay": 1e-5,
     "seq_len":      20,
-    "temperature":  0.1,
+    "temperature":  0.05,
     "eval_k":       20,
-    "resume":       True,          
+    "resume":       False,
     "ratings_path": "dataset/ratings.dat",
     "users_path":   "dataset/users.dat",
     "checkpoint_dir": os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints"),
@@ -31,99 +31,157 @@ CONFIG = {
 
 
 # ---------------------------------------------------------------------------
-# MAIN
+# HELPER: Load and prepare data once
 # ---------------------------------------------------------------------------
 
-def main():
-    # 1. Device
+class DataManager:
+
+    def __init__(self):
+        self.train_loader = None
+        self.test_loader = None
+        self.num_users = None
+        self.num_movies = None
+    
+    def prepare(self):
+        """Load data, preprocess, split, build history."""
+        print("=" * 60)
+        print("PREPARING DATA")
+        print("=" * 60)
+        
+        # Preprocessing
+        print("\nPreprocessing data...")
+        prep = Preprocessor(seq_len=CONFIG["seq_len"])
+        ratings, users = prep.preprocess(CONFIG["ratings_path"], CONFIG["users_path"])
+
+        self.num_users  = int(len(prep.user_encoder.classes_))
+        self.num_movies = int(len(prep.movie_encoder.classes_))
+        print(f"Users: {self.num_users} | Movies: {self.num_movies}")
+
+        # Split data
+        print("\nSplitting data (80/20)...")
+        split_idx     = int(0.8 * len(ratings))
+        train_ratings = ratings.iloc[:split_idx].reset_index(drop=True)
+        test_ratings  = ratings.iloc[split_idx:].reset_index(drop=True)
+        print(f"Train: {len(train_ratings)} | Test: {len(test_ratings)}")
+
+        # Build history từ train_ratings
+        print("\nBuilding user history from train set...")
+        train_hist = prep.build_user_hist_array(train_ratings)
+
+        # DataLoaders
+        print("\nPreparing DataLoaders...")
+        self.train_loader = get_dataloader(
+            train_ratings, users, train_hist,
+            batch_size=CONFIG["batch_size"], shuffle=True
+        )
+        self.test_loader = get_dataloader(
+            test_ratings, users, train_hist,
+            batch_size=CONFIG["batch_size"], shuffle=False
+        )
+        print(f"Train batches: {len(self.train_loader)} | Test batches: {len(self.test_loader)}\n")
+
+
+# ---------------------------------------------------------------------------
+# TRAIN FUNCTION
+# ---------------------------------------------------------------------------
+
+def train():
+    """Chạy training."""
+    print("\n" + "=" * 60)
+    print("TRAINING")
+    print("=" * 60)
+    
+    # Setup
     device   = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_gpus = torch.cuda.device_count()
     print(f"Device: {device} | GPUs: {num_gpus}")
-    print(f"Running Mode: {CONFIG['mode'].upper()}") # <--- Thêm dòng in thông báo
-
-    # 2. Preprocessing — chỉ encode, chưa build history
-    print("\nPreprocessing data...")
-    prep = Preprocessor(seq_len=CONFIG["seq_len"])
-    ratings, users = prep.preprocess(CONFIG["ratings_path"], CONFIG["users_path"])
-
-    num_users  = len(prep.user_encoder.classes_)
-    num_movies = len(prep.movie_encoder.classes_)
-    print(f"Users: {num_users} | Movies: {num_movies}")
-
-    # 3. Split TRƯỚC khi build history (tránh data leak)
-    print("\nSplitting data...")
-    split_idx     = int(0.8 * len(ratings))
-    train_ratings = ratings.iloc[:split_idx].reset_index(drop=True)
-    test_ratings  = ratings.iloc[split_idx:].reset_index(drop=True)
-
-    # 4. Build history CHỈ từ train_ratings
-    print("Building user history from train set...")
-    train_hist = prep.build_user_hist_array(train_ratings)
-
-    # 5. DataLoaders
-    print("Preparing DataLoaders...")
-    # Nếu chỉ test, bạn vẫn cần train_loader nếu logic code của bạn yêu cầu, 
-    # nhưng ta có thể tạo bình thường để luồng chuẩn bị dữ liệu không bị gãy.
-    train_loader = get_dataloader(
-        train_ratings, users, train_hist,
-        batch_size=CONFIG["batch_size"], shuffle=True
-    )
-    test_loader = get_dataloader(
-        test_ratings, users, train_hist,
-        batch_size=CONFIG["batch_size"], shuffle=False
-    )
-
-    # 6. Model
-    print("Initializing model...")
-    model = TwoTowerModel(num_users=num_users, num_movies=num_movies)
+    print(f"Config: batch_size={CONFIG['batch_size']}, lr={CONFIG['lr']}, temperature={CONFIG['temperature']}\n")
     
-    # --- LOGIC TỰ ĐỘNG THÍCH ỨNG SỐ LƯỢNG GPU ---
+    # Data
+    data_manager = DataManager()
+    data_manager.prepare()
+    
+    # Model
+    print("Initializing model...")
+    model = TwoTowerModel(num_users=data_manager.num_users, num_movies=data_manager.num_movies)
     if num_gpus > 1:
-        print(f"  -> Phát hiện {num_gpus} GPUs. Tự động bật chế độ song song (DataParallel)...")
+        print(f"Using DataParallel on {num_gpus} GPUs")
         model = nn.DataParallel(model)
-    else:
-        print(f"  -> Chạy trên chế độ Đơn thiết bị ({device}).")
-        
     model.to(device)
+    
+    optimizer = optim.AdamW(
+        model.parameters(),
+        lr=CONFIG["lr"],
+        weight_decay=CONFIG["weight_decay"]
+    )
+    
+    # Train
+    best_checkpoint_path = train_model(
+        model          = model,
+        train_loader   = data_manager.train_loader,
+        optimizer      = optimizer,
+        device         = device,
+        epochs         = CONFIG["epochs"],
+        checkpoint_dir = CONFIG["checkpoint_dir"],
+        temperature    = CONFIG["temperature"],
+        resume         = CONFIG["resume"],
+    )
+    
+    # Save final model
+    torch.save(model.state_dict(), CONFIG["final_model_path"])
+    print(f"\n✓ Final model saved: {CONFIG['final_model_path']}")
+    
+    return model, data_manager, best_checkpoint_path
 
-    best_checkpoint_path = os.path.join(CONFIG["checkpoint_dir"], "best_checkpoint.pth")
 
-    # -----------------------------------------------------------------------
-    # PHÂN NHÁNH: TRAIN vs TEST
-    # -----------------------------------------------------------------------
-    if CONFIG["mode"] == "train":
-        optimizer = optim.Adam(model.parameters(), lr=CONFIG["lr"])
+# ---------------------------------------------------------------------------
+# TEST FUNCTION
+# ---------------------------------------------------------------------------
 
-        # 7. Train (resume nếu CONFIG["resume"] = True)
-        best_checkpoint_path = train(
-            model          = model,
-            train_loader   = train_loader,
-            optimizer      = optimizer,
-            device         = device,
-            epochs         = CONFIG["epochs"],
-            checkpoint_dir = CONFIG["checkpoint_dir"],
-            temperature    = CONFIG["temperature"],
-            resume         = CONFIG["resume"],
-        )
-
-        # 8. Lưu final model
-        torch.save(model.state_dict(), CONFIG["final_model_path"])
-        print(f"\nFinal model saved: {CONFIG['final_model_path']}")
-
-    # 9. Evaluate (Chạy khi mode là 'test' hoặc sau khi train xong)
-    print("\n--- EVALUATING FROM BEST CHECKPOINT ---")
-    if not os.path.exists(best_checkpoint_path):
-        print(f"[ERROR] Không tìm thấy file checkpoint tại: {best_checkpoint_path}")
-        return
-
+def test(model, data_manager, best_checkpoint_path):
+    """Chạy evaluation."""
+    print("\n" + "=" * 60)
+    print("EVALUATION")
+    print("=" * 60)
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     evaluate(
         model           = model,
-        test_loader     = test_loader,
+        test_loader     = data_manager.test_loader,
         device          = device,
         checkpoint_path = best_checkpoint_path,
         k               = CONFIG["eval_k"],
     )
 
 
+# ---------------------------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
-    main()
+    # # ========== OPTION 1: Train + Test ==========
+    model, data_manager, best_checkpoint_path = train()
+    test(model, data_manager, best_checkpoint_path)
+    
+    # ========== OPTION 2: Chỉ Train ==========
+    # model, data_manager, best_checkpoint_path = train()
+    
+    # ========== OPTION 3: Chỉ Test =========
+    # device   = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # data_manager = DataManager()
+    # data_manager.prepare()
+    
+    # print("Initializing model...")
+    # model = TwoTowerModel(num_users=data_manager.num_users, num_movies=data_manager.num_movies)
+    # num_gpus = torch.cuda.device_count()
+    # if num_gpus > 1:
+    #     model = nn.DataParallel(model)
+    # model.to(device)
+    
+    # best_checkpoint_path = os.path.join(CONFIG["checkpoint_dir"], "best_checkpoint.pth")
+    # test(model, data_manager, best_checkpoint_path)
+    
+    # print("\n" + "=" * 60)
+    # print("✅ ALL DONE!")
+    # print("=" * 60)
