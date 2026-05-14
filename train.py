@@ -8,7 +8,7 @@ import torch.nn as nn
 # LOSS
 # ---------------------------------------------------------------------------
 
-def in_batch_softmax_loss(user_vecs, item_vecs, temperature=0.05):
+def in_batch_softmax_loss(user_vecs, item_vecs, temperature=0.1):
     """
     In-batch Softmax Loss.
     Temperature nhỏ hơn (0.05) → harder negatives → learning tốt hơn.
@@ -22,17 +22,18 @@ def in_batch_softmax_loss(user_vecs, item_vecs, temperature=0.05):
 # CHECKPOINT UTILS
 # ---------------------------------------------------------------------------
 
-def save_checkpoint(path, model, optimizer, epoch, best_loss):
-    """Lưu đầy đủ trạng thái: model, optimizer, epoch, best_loss."""
+def save_checkpoint(path, model, optimizer, epoch, best_loss, preprocessor):
     base_model = model.module if isinstance(model, nn.DataParallel) else model
-    
     torch.save({
-        "epoch":           epoch,
-        "best_loss":       best_loss,
-        "model_state":     base_model.state_dict(),
+        "epoch": epoch,
+        "best_loss": best_loss,
+        "model_state": base_model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
+        # Lưu thêm Encoders để đảm bảo ID không bị lệch khi Resume
+        "user_encoder": preprocessor.user_encoder,
+        "movie_encoder": preprocessor.movie_encoder,
+        "genre2id": preprocessor.genre2id
     }, path)
-
 
 def load_checkpoint(path, model, optimizer, device):
     """Load checkpoint + xử lý DataParallel mismatch."""
@@ -69,32 +70,19 @@ def load_checkpoint(path, model, optimizer, device):
 # ---------------------------------------------------------------------------
 
 def train(model, train_loader, optimizer, device,
-          epochs, checkpoint_dir, temperature=0.05, resume=False):
-    """
-    Huấn luyện model (chỉ track loss, không test metrics).
-    Test metrics chỉ chạy 1 lần sau khi training xong.
+          epochs, checkpoint_dir, preprocessor, temperature=0.05, resume=False):
     
-    Args:
-        resume: True → load best_checkpoint.pth và train tiếp
-    
-    Returns:
-        str: đường dẫn best_checkpoint.pth
-    """
     os.makedirs(checkpoint_dir, exist_ok=True)
     best_checkpoint_path = os.path.join(checkpoint_dir, "best_checkpoint.pth")
 
     start_epoch = 0
     best_loss   = float("inf")
 
-    # Resume nếu cần
-    if resume:
-        if os.path.exists(best_checkpoint_path):
-            print("\nResuming training from checkpoint...")
-            start_epoch, best_loss = load_checkpoint(
-                best_checkpoint_path, model, optimizer, device
-            )
-        else:
-            print("\n[Warning] Best checkpoint.pth not found. Train from scratch.")
+    if resume and os.path.exists(best_checkpoint_path):
+        print("\nResuming training from checkpoint...")
+        start_epoch, best_loss = load_checkpoint(
+            best_checkpoint_path, model, optimizer, device
+        )
 
     print("\n--- START TRAINING ---")
     for epoch in range(start_epoch, epochs):
@@ -102,42 +90,47 @@ def train(model, train_loader, optimizer, device,
         total_loss = 0.0
 
         for batch_idx, batch in enumerate(train_loader):
+            # 1. Chuẩn bị User Inputs (khớp với dataset.py và UserTower)
+            user_features = batch["user_inputs"]
             user_inputs = {
-                "user_id":    batch["user_id"].to(device),
-                "gender":     batch["gender"].to(device),
-                "occupation": batch["occupation"].to(device),
-                "movie_hist": batch["user_hist"].to(device),
+                "user_id":    user_features["user_id"].to(device),
+                "gender":     user_features["gender"].to(device),
+                "age":        user_features["age"].to(device),        # Bổ sung Age
+                "occupation": user_features["occupation"].to(device),
+                "movie_hist": user_features["movie_hist"].to(device), 
             }
-            target_movies = batch["target_movie"].to(device)
+
+            # 2. Chuẩn bị Item Inputs (khớp với ItemTower nâng cấp)
+            item_features = batch["item_inputs"]
+            item_inputs = {
+                "target_movie":  item_features["target_movie"].to(device),
+                "target_genres": item_features["target_genres"].to(device) # Bổ sung Genres
+            }
 
             optimizer.zero_grad()
-            user_vec, item_vec = model(user_inputs, target_movies)
+            
+            # 3. Forward pass qua Two-Tower
+            # Model trả về 2 véc-tơ đã L2 normalize
+            user_vec, item_vec = model(user_inputs, item_inputs)
+            
+            # 4. Tính In-batch Softmax Loss
             loss = in_batch_softmax_loss(user_vec, item_vec, temperature=temperature)
+            
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
-            avg_batch_loss = total_loss / (batch_idx + 1)
             
-            # In progress mỗi 10 batches
-            if (batch_idx + 1) % 10 == 0 or batch_idx == 0:
-                print(
-                    f"Epoch {epoch+1}/{epochs} | "
-                    f"Batch {batch_idx+1}/{len(train_loader)} | "
-                    f"Batch Loss: {loss.item():.4f} | "
-                    f"Avg Loss: {avg_batch_loss:.4f}"
-                )
+            if (batch_idx + 1) % 500 == 0 or batch_idx == 0:
+                avg_batch_loss = total_loss / (batch_idx + 1)
+                print(f"Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{len(train_loader)} | Loss: {avg_batch_loss:.4f}")
 
         avg_epoch_loss = total_loss / len(train_loader)
-        print(f"\nEpoch {epoch+1} complete — Train Loss: {avg_epoch_loss:.4f}")
+        print(f"Epoch {epoch+1} complete — Train Loss: {avg_epoch_loss:.4f}")
 
-        # ── Lưu best checkpoint theo training loss ───────────────────────────
         if avg_epoch_loss < best_loss:
             best_loss = avg_epoch_loss
-            save_checkpoint(best_checkpoint_path, model, optimizer, epoch, best_loss)
-            print(f"  ✓ New best loss ({best_loss:.4f}) — saved checkpoint\n")
-        else:
-            print(f"  – No improvement (best loss: {best_loss:.4f})\n")
+            save_checkpoint(best_checkpoint_path, model, optimizer, epoch, best_loss, preprocessor)
+            print(f"New best loss saved at best_checkpoint_path\n")
 
-    print("--- TRAINING COMPLETE ---")
     return best_checkpoint_path
