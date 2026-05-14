@@ -76,7 +76,7 @@ def main():
         checkpoint_dir=HYPERPARAMS["checkpoint_dir"],
         preprocessor=prep,
         temperature=HYPERPARAMS["temperature"],
-        resume=False
+        resume=True
     )
 
     # 6. Evaluate
