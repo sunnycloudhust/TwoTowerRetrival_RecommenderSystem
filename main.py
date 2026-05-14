@@ -8,7 +8,6 @@ from train import train
 from test import evaluate
 
 def main():
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -21,32 +20,30 @@ def main():
     HYPERPARAMS = {
         "seq_len":        20,
         "max_genres":     5,
-        "batch_size":     1000,
+        "batch_size":     1024,
         "lr":             1e-3,
-        "epochs":         200,
+        "epochs":         0,
         "temperature":    0.08,
         "checkpoint_dir": "checkpoints"
     }
 
-    # ---------------------------------------------------------
     # 2. Preprocessing
-    # ---------------------------------------------------------
-    print("\nPreprocessing data.")
+
+    print("\nPreprocessing data")
     prep = Preprocessor(seq_len=HYPERPARAMS["seq_len"])
     train_df, test_df, genre_matrix = prep.preprocess(
         DATA_PATHS["ratings"],
         DATA_PATHS["users"],
         DATA_PATHS["movies"],
-        max_genres=HYPERPARAMS["max_genres"]    # thêm dòng này
+        max_genres=HYPERPARAMS["max_genres"]    
     )
 
     print(f"User count:  {prep.num_users}")
     print(f"Movie count: {prep.num_movies}")
     print(f"Train size:  {len(train_df)} | Test size: {len(test_df)}")
 
-    # ---------------------------------------------------------
     # 3. DataLoaders
-    # ---------------------------------------------------------
+
     print("\nDataloader initialization")
     train_loader = get_dataloader(
         train_df, genre_matrix,
@@ -57,15 +54,10 @@ def main():
         batch_size=HYPERPARAMS["batch_size"], shuffle=False
     )
 
-    # ---------------------------------------------------------
     # 4. Model & Optimizer
-    # ---------------------------------------------------------
+
     print("\nModel initialization")
-    model = TwoTowerModel(
-        num_users=prep.num_users,
-        num_movies=prep.num_movies,
-        num_genres=prep.num_genres
-    )
+    model = TwoTowerModel(num_users=prep.num_users, num_movies=prep.num_movies,num_genres=prep.num_genres)
     if torch.cuda.device_count() > 1:
         print(f"Detected {torch.cuda.device_count()} GPUs. DataParallel starts.")
         model = nn.DataParallel(model)
@@ -73,9 +65,8 @@ def main():
 
     optimizer = optim.AdamW(model.parameters(), lr=HYPERPARAMS["lr"], weight_decay=1e-5)
 
-    # ---------------------------------------------------------
     # 5. Train
-    # ---------------------------------------------------------
+
     best_model_path = train(
         model=model,
         train_loader=train_loader,
@@ -87,20 +78,27 @@ def main():
         temperature=HYPERPARAMS["temperature"],
         resume=True
     )
-    # ---------------------------------------------------------
+
     # 6. Evaluate
-    # ---------------------------------------------------------
+    
     print("\nEvaluating on test set")
+    user_seen_dict = {}
+    for user_id, group in train_df.groupby("user_id"):
+        seen_movies = set(group["target_movie"].tolist())
+        first_history = group.iloc[0]["history"]
+        seen_movies.update([m for m in first_history if m != 0])
+        user_seen_dict[user_id] = seen_movies
+
     metrics = evaluate(
         model=model,
         test_loader=test_loader,
         genre_matrix=genre_matrix,
         device=device,
         checkpoint_path=best_model_path,
-        k=20
+        k=20,
+        user_seen_dict=user_seen_dict  
     )
 
-    print("\n================================")
 
 if __name__ == "__main__":
     main()

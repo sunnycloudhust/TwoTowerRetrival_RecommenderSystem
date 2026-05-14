@@ -49,7 +49,6 @@ def load_checkpoint(path, model, optimizer, device):
         start_epoch = 0
         best_loss   = float("inf")
 
-    # Xử lý mismatch DataParallel / non-DataParallel
     is_parallel      = isinstance(model, nn.DataParallel)
     has_module_prefix = any(k.startswith("module.") for k in state_dict.keys())
 
