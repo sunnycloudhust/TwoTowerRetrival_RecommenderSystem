@@ -3,24 +3,11 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-
-# ---------------------------------------------------------------------------
-# LOSS
-# ---------------------------------------------------------------------------
-
 def in_batch_softmax_loss(user_vecs, item_vecs, temperature=0.1):
-    """
-    In-batch Softmax Loss.
-    Temperature nhỏ hơn (0.05) → harder negatives → learning tốt hơn.
-    """
+
     logits = torch.matmul(user_vecs, item_vecs.T) / temperature
     labels = torch.arange(user_vecs.size(0), device=user_vecs.device)
     return F.cross_entropy(logits, labels)
-
-
-# ---------------------------------------------------------------------------
-# CHECKPOINT UTILS
-# ---------------------------------------------------------------------------
 
 def save_checkpoint(path, model, optimizer, epoch, best_loss, preprocessor):
     base_model = model.module if isinstance(model, nn.DataParallel) else model
@@ -29,14 +16,12 @@ def save_checkpoint(path, model, optimizer, epoch, best_loss, preprocessor):
         "best_loss": best_loss,
         "model_state": base_model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
-        # Lưu thêm Encoders để đảm bảo ID không bị lệch khi Resume
         "user_encoder": preprocessor.user_encoder,
         "movie_encoder": preprocessor.movie_encoder,
         "genre2id": preprocessor.genre2id
     }, path)
 
 def load_checkpoint(path, model, optimizer, device):
-    """Load checkpoint + xử lý DataParallel mismatch."""
     checkpoint = torch.load(path, map_location=device, weights_only=False)
 
     if "model_state" in checkpoint:
@@ -49,7 +34,7 @@ def load_checkpoint(path, model, optimizer, device):
         start_epoch = 0
         best_loss   = float("inf")
 
-    is_parallel      = isinstance(model, nn.DataParallel)
+    is_parallel = isinstance(model, nn.DataParallel)
     has_module_prefix = any(k.startswith("module.") for k in state_dict.keys())
 
     if is_parallel and not has_module_prefix:
@@ -60,13 +45,9 @@ def load_checkpoint(path, model, optimizer, device):
     model.load_state_dict(state_dict)
     optimizer.load_state_dict(checkpoint["optimizer_state"])
 
-    print(f"  ✓ Resumed from epoch {start_epoch} | best loss: {best_loss:.4f}")
+    print(f"Resumed from epoch {start_epoch} | best loss: {best_loss:.4f}")
     return start_epoch, best_loss
 
-
-# ---------------------------------------------------------------------------
-# TRAINING LOOP
-# ---------------------------------------------------------------------------
 
 def train(model, train_loader, optimizer, device,
           epochs, checkpoint_dir, preprocessor, temperature=0.05, resume=False):
@@ -89,27 +70,21 @@ def train(model, train_loader, optimizer, device,
         total_loss = 0.0
 
         for batch_idx, batch in enumerate(train_loader):
-            # 1. Chuẩn bị User Inputs (khớp với dataset.py và UserTower)
             user_features = batch["user_inputs"]
             user_inputs = {
                 "user_id":    user_features["user_id"].to(device),
                 "gender":     user_features["gender"].to(device),
-                "age":        user_features["age"].to(device),        # Bổ sung Age
+                "age":        user_features["age"].to(device),        
                 "occupation": user_features["occupation"].to(device),
                 "movie_hist": user_features["movie_hist"].to(device), 
             }
-
-            # 2. Chuẩn bị Item Inputs (khớp với ItemTower nâng cấp)
             item_features = batch["item_inputs"]
             item_inputs = {
                 "target_movie":  item_features["target_movie"].to(device),
-                "target_genres": item_features["target_genres"].to(device) # Bổ sung Genres
+                "target_genres": item_features["target_genres"].to(device) 
             }
 
             optimizer.zero_grad()
-            
-            # 3. Forward pass qua Two-Tower
-            # Model trả về 2 véc-tơ đã L2 normalize
             user_vec, item_vec = model(user_inputs, item_inputs)
             
             # 4. Tính In-batch Softmax Loss
