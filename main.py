@@ -19,9 +19,9 @@ def main():
     }
 
     HYPERPARAMS = {
-        "seq_len":        10,
+        "seq_len":        20,
         "max_genres":     5,
-        "batch_size":     500,
+        "batch_size":     1000,
         "lr":             1e-3,
         "epochs":         200,
         "temperature":    0.07,
