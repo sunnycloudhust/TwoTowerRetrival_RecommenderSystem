@@ -22,7 +22,7 @@ def main():
         "max_genres":     5,
         "batch_size":     1024,
         "lr":             1e-3,
-        "epochs":         100,
+        "epochs":         200,
         "temperature":    0.08,
         "checkpoint_dir": "checkpoints"
     }
