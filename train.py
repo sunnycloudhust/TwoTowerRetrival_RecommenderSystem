@@ -121,7 +121,7 @@ def train(model, train_loader, optimizer, device,
 
             total_loss += loss.item()
             
-            if (batch_idx + 1) % 50 == 0 or batch_idx == 0:
+            if (batch_idx + 1) % 500 == 0 or batch_idx == 0:
                 avg_batch_loss = total_loss / (batch_idx + 1)
                 print(f"Epoch {epoch+1}/{epochs} | Batch {batch_idx+1}/{len(train_loader)} | Loss: {avg_batch_loss:.4f}")
 
