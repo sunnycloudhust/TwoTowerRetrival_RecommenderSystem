@@ -64,16 +64,11 @@ def compute_topk_batched(user_vecs, item_vecs, k=20, batch_size=512, seen_items=
 
     return torch.cat(topk_list, dim=0).numpy()                         # (num_users, k)
 
-# ---------------------------------------------------------------------------
-# EVALUATE FUNCTION
-# ---------------------------------------------------------------------------
 
-def evaluate(model, test_loader, genre_matrix, device, checkpoint_path=None, k=20):
-    """Hàm đánh giá mô hình toàn diện."""
 
-    # -----------------------------------------------------------------------
-    # 1. Load checkpoint (nếu có)
-    # -----------------------------------------------------------------------
+def evaluate(model, test_loader, genre_matrix, device, checkpoint_path=None, k=20, user_seen_dict=None):
+
+    # 1. Load checkpoint 
     if checkpoint_path is not None:
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         state_dict = checkpoint["model_state"] if "model_state" in checkpoint else checkpoint
@@ -89,10 +84,7 @@ def evaluate(model, test_loader, genre_matrix, device, checkpoint_path=None, k=2
         print(f"  ✓ Model weights loaded from {checkpoint_path}")
 
     model.eval()
-
-    # --- FIX 1: Lấy base_model để truy cập tower trực tiếp ---
-    # DataParallel wrap model vào model.module,
-    # nên model.item_tower sẽ bị AttributeError khi dùng multi-GPU.
+    
     base_model = model.module if isinstance(model, nn.DataParallel) else model
 
     # -----------------------------------------------------------------------
@@ -122,15 +114,12 @@ def evaluate(model, test_loader, genre_matrix, device, checkpoint_path=None, k=2
     print(f"[2/3] Trích xuất embedding người dùng tập Test...")
     all_user_vecs = []
     all_targets   = []
-    # seen_items[i] = set các movie_id mà user i đã xem trong lịch sử (history)
-    # Mục đích: loại các phim này ra khi tính Top-K để không inflate metrics
     all_seen_items = []
 
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Inference"):
             u_in = batch["user_inputs"]
 
-            # Dùng base_model.user_tower
             user_vec = base_model.user_tower(
                 u_in["user_id"].to(device),
                 u_in["gender"].to(device),
@@ -141,15 +130,12 @@ def evaluate(model, test_loader, genre_matrix, device, checkpoint_path=None, k=2
             all_user_vecs.append(user_vec.cpu())
             all_targets.append(batch["item_inputs"]["target_movie"])
 
-            # --- Thu thập seen_items từ movie_hist ---
-            # movie_hist shape: (B, seq_len), padding = 0
-            # Loại bỏ padding (id=0) trước khi cho vào set
-            movie_hist_np = u_in["movie_hist"].cpu().numpy()   # (B, seq_len)
-            for hist_row in movie_hist_np:
-                seen = set(hist_row[hist_row != 0].tolist())   # bỏ padding 0
+            user_ids_np = u_in["user_id"].cpu().numpy()
+            for uid in user_ids_np:
+                seen = user_seen_dict.get(uid, set()) if user_seen_dict is not None else set()
                 all_seen_items.append(seen)
 
-    user_vecs = torch.cat(all_user_vecs, dim=0)   # (num_test_users, 64)
+    user_vecs = torch.cat(all_user_vecs, dim=0)   
     targets   = torch.cat(all_targets,   dim=0).numpy()
 
     # -----------------------------------------------------------------------
