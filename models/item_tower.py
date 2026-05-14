@@ -6,13 +6,13 @@ class ItemTower(nn.Module):
     def __init__(self, movie_emb_layer, genre_emb_layer):
         super().__init__()
         self.movie_emb = movie_emb_layer
-        self.genre_emb = genre_emb_layer # Nhận layer có padding_idx=0
-        
-        # Giả sử movie_emb=64, genre_emb=16 -> Tổng input là 80
+        self.genre_emb = genre_emb_layer 
+
         self.mlp = nn.Sequential(
             nn.Linear(64 + 16, 128),
             nn.ReLU(),
-            nn.Linear(128, 64) # Output bắt buộc là 64 để khớp với User Tower
+            nn.Dropout(0.2),
+            nn.Linear(128, 64) 
         )
 
     def forward(self, movie_id, movie_genres):

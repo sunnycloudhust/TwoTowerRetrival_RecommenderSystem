@@ -15,6 +15,7 @@ class UserTower(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(64 + 8 + 8 + 16 + 64, 128),
             nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(128, 64) # Output 64 khớp với Item Tower
         )
 
