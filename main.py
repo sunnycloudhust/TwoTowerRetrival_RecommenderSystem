@@ -24,7 +24,7 @@ def main():
         "batch_size":     1000,
         "lr":             1e-3,
         "epochs":         200,
-        "temperature":    0.07,
+        "temperature":    0.08,
         "checkpoint_dir": "checkpoints"
     }
 
