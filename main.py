@@ -21,8 +21,8 @@ def main():
         "seq_len":        20,
         "max_genres":     5,
         "batch_size":     1024,
-        "lr":             1e-3,
-        "epochs":         200,
+        "lr":             1e-2,
+        "epochs":         400,
         "temperature":    0.08,
         "checkpoint_dir": "checkpoints"
     }
