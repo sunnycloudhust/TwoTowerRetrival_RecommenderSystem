@@ -22,9 +22,11 @@ def main():
         "max_genres":     5,
         "batch_size":     1024,
         "lr":             1e-2,
-        "epochs":         400,
+        "epochs":         100,
         "temperature":    0.08,
-        "checkpoint_dir": "checkpoints"
+        "checkpoint_dir": "checkpoints/temporal",
+        "random_split": False,
+        "k": 10
     }
 
     # 2. Preprocessing
@@ -32,6 +34,7 @@ def main():
     print("\nPreprocessing data")
     prep = Preprocessor(seq_len=HYPERPARAMS["seq_len"])
     train_df, test_df, genre_matrix = prep.preprocess(
+        HYPERPARAMS["random_split"],
         DATA_PATHS["ratings"],
         DATA_PATHS["users"],
         DATA_PATHS["movies"],
@@ -95,7 +98,7 @@ def main():
         genre_matrix=genre_matrix,
         device=device,
         checkpoint_path=best_model_path,
-        k=20,
+        k=HYPERPARAMS["k"],
         user_seen_dict=user_seen_dict  
     )
 

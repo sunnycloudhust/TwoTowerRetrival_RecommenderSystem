@@ -151,11 +151,64 @@ class Preprocessor:
                     train_samples.append(sample)
 
         return pd.DataFrame(train_samples), pd.DataFrame(test_samples)
+    
+    # -----------------------------------------------------------------------
+    # Random Split Generation (Non-Chronological)
+    # -----------------------------------------------------------------------
+    def generate_random_split(self, ratings_df, test_size=0.2):
+        """
+        Tạo train/test samples theo tỷ lệ 80-20 ngẫu nhiên, KHÔNG giữ trật tự thời gian:
+        - Xáo trộn (shuffle) các tương tác của user.
+        - 80% tương tác đầu tiên sau khi xáo trộn làm Train.
+        - 20% tương tác cuối cùng sau khi xáo trộn làm Test.
+        """
+        # Lọc tương tác tích cực
+        pos_ratings = ratings_df[ratings_df["rating"] >= 3].copy()
+        
+        # Xáo trộn toàn bộ dữ liệu một cách ngẫu nhiên (bỏ qua timestamp)
+        pos_ratings = pos_ratings.sample(frac=1, random_state=42).reset_index(drop=True)
+
+        train_samples, test_samples = [], []
+
+        for user_id, group in pos_ratings.groupby("user_id"):
+            movie_ids = group["movie_id"].tolist()
+            ratings   = group["rating"].tolist()
+            n         = len(movie_ids)
+
+            if n < 3:
+                continue
+            
+            # Tính toán chỉ mục chia split
+            split_idx = int(n * (1 - test_size))
+            
+            # Đảm bảo ít nhất 1 train và 1 test cho mỗi user thỏa mãn (n >= 3)
+            if split_idx == 0:
+                split_idx = 1
+            elif split_idx == n:
+                split_idx = n - 1
+
+            # Tạo chuỗi "history" từ danh sách đã bị xáo trộn
+            for i in range(1, n):
+                history_padded = self.pad_sequence(movie_ids[:i])
+                sample = {
+                    "user_id":      user_id,
+                    "history":      history_padded,
+                    "target_movie": movie_ids[i],
+                    "rating":       ratings[i],
+                }
+                
+                # Chia tập test_size (20% sau) và train (80% trước)
+                if i >= split_idx:
+                    test_samples.append(sample)
+                else:
+                    train_samples.append(sample)
+
+        return pd.DataFrame(train_samples), pd.DataFrame(test_samples)
 
     # -----------------------------------------------------------------------
     # Main entry point
     # -----------------------------------------------------------------------
-    def preprocess(self, ratings_path, users_path, movies_path, max_genres=5):
+    def preprocess(self, random_split, ratings_path, users_path, movies_path, max_genres=5):
         """
         Hàm thực thi chính.
 
@@ -181,8 +234,11 @@ class Preprocessor:
         users_processed = self.process_user_features(users_raw)
 
         # 5. Train / Test split
-        train_df, test_df = self.generate_sequential_data(ratings_encoded)
-
+        if random_split:
+            train_df, test_df = self.generate_random_split(ratings_encoded)
+        else:
+            train_df, test_df = self.generate_sequential_data(ratings_encoded)
+        
         # 6. Merge side info
         train_df = train_df.merge(users_processed, on="user_id", how="left")
         test_df  = test_df.merge(users_processed,  on="user_id", how="left")
