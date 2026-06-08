@@ -1,11 +1,22 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from .user_tower import UserTower
 from .item_tower import ItemTower
 
 class TwoTowerModel(nn.Module):
-    def __init__(self, num_users, num_movies, num_genres):
+    def __init__(
+        self,
+        num_users,
+        num_movies,
+        num_genres,
+        num_genders=2,
+        num_ages=7,
+        num_occupations=21,
+        max_seq_len=20,
+        embedding_dim=64,
+        genre_dim=16,
+        dropout=0.2,
+    ):
         """
         Args:
             num_users (int): Kích thước tập User (từ vocab).
@@ -16,12 +27,27 @@ class TwoTowerModel(nn.Module):
 
         # 1. Khởi tạo các lớp Embedding dùng chung (Shared Layers)
         # Bắt buộc padding_idx=0 để các véc-tơ đệm luôn là véc-tơ 0
-        self.shared_movie_emb = nn.Embedding(num_movies, 64, padding_idx=0)
-        self.shared_genre_emb = nn.Embedding(num_genres, 16, padding_idx=0)
+        self.shared_movie_emb = nn.Embedding(num_movies, embedding_dim, padding_idx=0)
+        self.shared_genre_emb = nn.Embedding(num_genres, genre_dim, padding_idx=0)
         
         # 2. Khởi tạo Hai Tháp (Bơm các shared layers vào)
-        self.user_tower = UserTower(num_users, self.shared_movie_emb)
-        self.item_tower = ItemTower(self.shared_movie_emb, self.shared_genre_emb)
+        self.user_tower = UserTower(
+            num_users=num_users,
+            num_genders=num_genders,
+            num_ages=num_ages,
+            num_occupations=num_occupations,
+            movie_emb_layer=self.shared_movie_emb,
+            max_seq_len=max_seq_len,
+            embedding_dim=embedding_dim,
+            dropout=dropout,
+        )
+        self.item_tower = ItemTower(
+            self.shared_movie_emb,
+            self.shared_genre_emb,
+            embedding_dim=embedding_dim,
+            genre_dim=genre_dim,
+            dropout=dropout,
+        )
 
     def forward(self, user_inputs, item_inputs):
         """

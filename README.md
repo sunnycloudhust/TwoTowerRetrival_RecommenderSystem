@@ -5,8 +5,8 @@ A high-performance Two-Tower Neural Retrieval model implemented in PyTorch for s
 ---
 
 ## ⚙️ Key Features
-- **Two-Tower Architecture:** Implements standalone `UserTower` and `ItemTower` sub-networks mapping users and movies to a shared low-dimensional embedding space ($d=64$).
-- **Optimized Performance:** Pre-computes and stacks DataFrames into static NumPy matrices during initialization to eliminate CPU-to-GPU data pipelines bottlenecks.
+- **Two-Tower Architecture:** Implements standalone `UserTower` and `ItemTower` sub-networks mapping users and movies to a shared low-dimensional embedding space ($d=64$), with Transformer-based history encoding.
+- **Optimized Performance:** Pre-computes and stacks DataFrames into static tensors during dataset initialization to reduce per-sample CPU overhead.
 - **In-Batch Softmax Loss:** Leverages dynamic, highly efficient contrastive learning loss with a temperature scaling parameter to scale candidate retrieval.
 - **Sequential Leave-One-Out Evaluation:** Built using industrial sequential prediction patterns. It drops items seen in the training history and performs dynamic `-inf` scoring masks on test lookups.
 - **Distributed Training Ready:** Features automatic scaling across multiple GPUs using PyTorch's `nn.DataParallel`.
@@ -29,6 +29,7 @@ A high-performance Two-Tower Neural Retrieval model implemented in PyTorch for s
 ├── dataset.py                # Ultra-performant PyTorch Dataset mapping and Dataloaders
 ├── train.py                  # Training loops and checkpoint recovery mechanisms
 ├── test.py                   # Batched matrix lookups and standard LOO ranking metrics
+├── utils.py                  # Experiment helpers: seeding, plotting, CSV summaries
 └── main.py                   # Master orchestration script pipeline execution
 ```
 
@@ -38,7 +39,7 @@ A high-performance Two-Tower Neural Retrieval model implemented in PyTorch for s
 
 ### 1. Data Pipeline & Data Preprocessing
 The model expects interaction datasets tracking explicit ratings along chronological timelines. 
-- Filters interaction matrices keeping only positive records ($	ext{rating} \ge 3$).
+- Filters interaction matrices keeping only positive records ($\text{rating} \ge 3$).
 - Uses **Leave-One-Out (LOO)** sequencing: the last recorded interaction of a user acts as the test query target, while sequences prior populate the training split.
 - Automatically handles **Multi-Genre Fields** mapping variable-length categories (`Action|Sci-Fi|Thriller`) into rigid, padded fixed-width vectors.
 
@@ -51,7 +52,7 @@ The model expects interaction datasets tracking explicit ratings along chronolog
  [Embeddings]                  [History Seq]   [Shared Movie Emb]        [Genres Vector]
         │                             │           (Padded Index 0)              │
         ▼                             ▼           │                             ▼
-  [Concatenate]              [Masked Pooling/RNN] │                     [Shared Genre Emb]
+  [Concatenate]         [Transformer + Attention] │                     [Shared Genre Emb]
         │                             │           │                             │
         └──────────────┬──────────────┘           │                             ▼
                        ▼                          └──────────────┬──────────────┘
@@ -75,7 +76,7 @@ The model expects interaction datasets tracking explicit ratings along chronolog
 ### Prerequisites
 Make sure your environment contains the necessary dependencies:
 ```bash
-pip install torch numpy pandas scikit-learn tqdm
+pip install torch numpy pandas scikit-learn tqdm matplotlib
 ```
 
 ### Dataset Placement
@@ -98,24 +99,56 @@ python main.py
 
 ### Pipeline Hyperparameters (Modifiable via `main.py`)
 ```python
-HYPERPARAMS = {
-    "seq_len":        20,     # Max sequence size for sliding session-history tracking
-    "max_genres":     5,      # Padding/truncation width constraint applied to categories
-    "batch_size":     1024,   # Total batch profile routed to standard memory pages
-    "lr":             1e-2,   # Optimizer learning step assignment 
-    "epochs":         400,    # Target depth of optimization cycles over dataset
-    "temperature":    0.08,   # Normalization factor for in-batch contrastive scaling
-    "checkpoint_dir": "checkpoints",
-    "random_split":   True,   # Whether to use random or sequential split
-    "k":              20,     # Default K for top-k retrieval evaluation
+BASE_HYPERPARAMS = {
+    "seq_len": 20,
+    "max_genres": 5,
+    "batch_size": 1024,
+    "lr": 1e-3,
+    "weight_decay": 1e-4,
+    "epochs": 100,
+    "temperature": 0.08,
+    "random_split": False,
+    "eval_every": 1,
+    "num_workers": 2,
+    "dropout": 0.2,
+    "grad_clip": 1.0,
+    "num_runs": 5,
+    "seeds": [42, 2024, 3407, 12345, 98765],
 }
+
+EXPERIMENTS = [
+    {
+        "k": 20,
+        "checkpoint_dir": "checkpoints/k20_5runs",
+        "loss_plot_path": "outputs/k20/loss_curves_k20_5_runs.png",
+        "final_results_csv_path": "outputs/k20/final_results_k20_5_runs.csv",
+    },
+    {
+        "k": 10,
+        "checkpoint_dir": "checkpoints/k10_5runs",
+        "loss_plot_path": "outputs/k10/loss_curves_k10_5_runs.png",
+        "final_results_csv_path": "outputs/k10/final_results_k10_5_runs.csv",
+    },
+]
 ```
 
 ---
 
 ## 📊 Evaluation Metrics
 
-When training runs conclude, the system maps out embeddings for all candidate items across your catalog to evaluate validation batches. Evaluated test records output metrics mapped under an explicit target boundary ($K=20$):
+When training runs conclude, the system maps out embeddings for all candidate items across your catalog to evaluate validation and test batches. Checkpoints are selected by validation ranking quality. The default script runs 5 independent seeds for both $K=20$ and $K=10$.
+
+Each experiment writes a final summary CSV with one row per completed run:
+```text
+outputs/k20/final_results_k20_5_runs.csv
+outputs/k10/final_results_k10_5_runs.csv
+```
+
+Each CSV contains the final train loss from the last epoch, the best validation metric, final test metrics, seed, run id, and checkpoint path. Training-loss plots are saved separately:
+```text
+outputs/k20/loss_curves_k20_5_runs.png
+outputs/k10/loss_curves_k10_5_runs.png
+```
 
 | Metric | Target Goal | Meaning |
 | :--- | :--- | :--- |
@@ -127,7 +160,7 @@ When training runs conclude, the system maps out embeddings for all candidate it
 ---
 
 ## 💾 Checkpoints and Resuming Training
-Weights and vocabulary states are managed inside `train.py`. The framework saves dictionary encoders (`user_encoder`, `movie_encoder`, `genre2id`) and model weights together. 
+Weights and vocabulary states are managed inside `train.py`. The framework saves dictionary encoders (`user_encoder`, `movie_encoder`, user feature encoders, `genre2id`) and model weights together.
 
 To resume an interrupted training session, toggle `resume=True` within the execution script's main sequence block in `main.py`:
 ```python

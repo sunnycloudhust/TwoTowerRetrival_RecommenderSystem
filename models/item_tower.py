@@ -3,16 +3,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class ItemTower(nn.Module):
-    def __init__(self, movie_emb_layer, genre_emb_layer):
+    def __init__(self, movie_emb_layer, genre_emb_layer, embedding_dim=64, genre_dim=16, dropout=0.2):
         super().__init__()
         self.movie_emb = movie_emb_layer
         self.genre_emb = genre_emb_layer 
 
         self.mlp = nn.Sequential(
-            nn.Linear(64 + 16, 128),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, 64) 
+            nn.Linear(embedding_dim + genre_dim, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, embedding_dim)
         )
 
     def forward(self, movie_id, movie_genres):

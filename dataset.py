@@ -12,22 +12,14 @@ class MovieLensDataset(Dataset):
                                chứa sẵn lịch sử trượt động, target, label và user features.
             genre_matrix (np.ndarray): Ma trận tra cứu nhanh ID thể loại phim.
         """
-        # 1. Chuyển đổi toàn bộ dữ liệu Pandas sang NumPy Array trong __init__
-        # Loại bỏ hoàn toàn nút thắt cổ chai (bottleneck) tra cứu của CPU.
-        self.user_ids = df["user_id"].values
-        self.genders = df["gender"].values
-        self.ages = df["age"].values
-        self.occupations = df["occupation"].values
-        self.target_movies = df["target_movie"].values
-        
-        # Nhãn đánh giá: Ép kiểu float32 để tương thích trực tiếp với các hàm Loss PyTorch
-        self.labels = df["rating"].values.astype(np.float32)
-        
-        # Cột 'history' chứa danh sách (list) các ID phim. Dùng np.vstack biến thành ma trận 2D tĩnh.
-        self.histories = np.vstack(df["history"].values)
-        
-        # 2. Lưu trữ bảng tra cứu thể loại phim
-        self.genre_matrix = genre_matrix
+        self.user_ids = torch.as_tensor(df["user_id"].to_numpy(), dtype=torch.long)
+        self.genders = torch.as_tensor(df["gender"].to_numpy(), dtype=torch.long)
+        self.ages = torch.as_tensor(df["age"].to_numpy(), dtype=torch.long)
+        self.occupations = torch.as_tensor(df["occupation"].to_numpy(), dtype=torch.long)
+        self.target_movies = torch.as_tensor(df["target_movie"].to_numpy(), dtype=torch.long)
+        self.labels = torch.as_tensor(df["rating"].to_numpy(np.float32), dtype=torch.float32)
+        self.histories = torch.as_tensor(np.vstack(df["history"].values), dtype=torch.long)
+        self.genre_matrix = torch.as_tensor(genre_matrix, dtype=torch.long)
 
     def __len__(self):
         return len(self.user_ids)
@@ -40,23 +32,41 @@ class MovieLensDataset(Dataset):
         # Phân cụm Output dict gọn gàng, ánh xạ chuẩn xác vào hàm forward của TwoTowerModel
         return {
             "user_inputs": {
-                "user_id": torch.tensor(self.user_ids[idx], dtype=torch.long),
-                "gender": torch.tensor(self.genders[idx], dtype=torch.long),
-                "age": torch.tensor(self.ages[idx], dtype=torch.long),
-                "occupation": torch.tensor(self.occupations[idx], dtype=torch.long),
-                "movie_hist": torch.tensor(self.histories[idx], dtype=torch.long) # Khớp tên biến UserTower
+                "user_id": self.user_ids[idx],
+                "gender": self.genders[idx],
+                "age": self.ages[idx],
+                "occupation": self.occupations[idx],
+                "movie_hist": self.histories[idx]
             },
             "item_inputs": {
-                "target_movie": torch.tensor(target_movie_id, dtype=torch.long),
-                "target_genres": torch.tensor(target_genres, dtype=torch.long)
+                "target_movie": target_movie_id,
+                "target_genres": target_genres
             },
-            "label": torch.tensor(self.labels[idx], dtype=torch.float)
+            "label": self.labels[idx]
         }
 
-def get_dataloader(df, genre_matrix, batch_size=256, shuffle=True, num_workers=2):
+def get_dataloader(
+    df,
+    genre_matrix,
+    batch_size=256,
+    shuffle=True,
+    num_workers=2,
+    pin_memory=False,
+    generator=None,
+    worker_init_fn=None,
+):
     """
     Hàm khởi tạo DataLoader nạp dữ liệu song song.
     """
     dataset = MovieLensDataset(df, genre_matrix)
     # Khuyên dùng num_workers >= 2 để tận dụng đa luồng CPU chuẩn bị batch trước cho GPU
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=num_workers > 0,
+        generator=generator,
+        worker_init_fn=worker_init_fn,
+    )

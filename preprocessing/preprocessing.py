@@ -20,6 +20,9 @@ class Preprocessor:
         self.num_users  = 0
         self.num_movies = 0
         self.num_genres = 0
+        self.num_genders = 0
+        self.num_ages = 0
+        self.num_occupations = 0
         self.genre2id   = {}
 
     # -----------------------------------------------------------------------
@@ -99,6 +102,9 @@ class Preprocessor:
         users["gender"]   = self.gender_encoder.fit_transform(users["gender"])
         users["age"]      = self.age_encoder.fit_transform(users["age"])
         users["occupation"] = self.occ_encoder.fit_transform(users["occupation"])
+        self.num_genders = len(self.gender_encoder.classes_)
+        self.num_ages = len(self.age_encoder.classes_)
+        self.num_occupations = len(self.occ_encoder.classes_)
         return users[["user_id", "gender", "age", "occupation"]]
 
     # -----------------------------------------------------------------------
