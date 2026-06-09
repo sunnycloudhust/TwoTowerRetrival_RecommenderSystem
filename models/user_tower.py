@@ -19,9 +19,11 @@ class UserTower(nn.Module):
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=1)
         self.mlp = nn.Sequential(
             nn.Linear(64 + 8 + 8 + 16 + 64, 128),
-            nn.ReLU(),
+            nn.LayerNorm(128),
+            nn.GELU(),
             nn.Dropout(0.2),
-            nn.Linear(128, 64) 
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
         )
 
     def forward(self, user_id, gender, age, occupation, movie_hist):

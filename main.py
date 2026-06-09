@@ -12,6 +12,7 @@ from utils import (
     build_user_seen_dict,
     plot_loss_histories,
     set_seed,
+    split_train_validation,
     write_metrics_csv,
 )
 
@@ -30,19 +31,20 @@ HYPERPARAMS = {
     "weight_decay": 1e-5,
     "epochs": 100,
     "temperature": 0.08,
+    "eval_every": 1,
     "num_runs": 5,
     "seeds": [42, 2024, 3407, 12345, 98765],
 }
 
 EXPERIMENTS = [
     {
-        "name": "temporal_k10",
+        "name": "temporal",
         "split": "temporal",
         "random_split": False,
         "k": 10,
     },
     {
-        "name": "random_k20",
+        "name": "random",
         "split": "random",
         "random_split": True,
         "k": 20,
@@ -67,17 +69,28 @@ def run_experiment(experiment, device):
         DATA_PATHS["movies"],
         max_genres=HYPERPARAMS["max_genres"],
     )
+    train_df, val_df = split_train_validation(train_df)
     print(f"User count:  {preprocessor.num_users}")
     print(f"Movie count: {preprocessor.num_movies}")
-    print(f"Train size:  {len(train_df)} | Test size: {len(test_df)}")
+    print(
+        f"Train size:  {len(train_df)} | "
+        f"Validation size: {len(val_df)} | Test size: {len(test_df)}"
+    )
 
+    val_loader = get_dataloader(
+        val_df,
+        genre_matrix,
+        batch_size=HYPERPARAMS["batch_size"],
+        shuffle=False,
+    )
     test_loader = get_dataloader(
         test_df,
         genre_matrix,
         batch_size=HYPERPARAMS["batch_size"],
         shuffle=False,
     )
-    user_seen_dict = build_user_seen_dict(train_df)
+    val_seen_dict = build_user_seen_dict(train_df)
+    test_seen_dict = build_user_seen_dict(train_df, val_df)
     histories = []
     result_rows = []
 
@@ -115,6 +128,11 @@ def run_experiment(experiment, device):
             preprocessor=preprocessor,
             temperature=HYPERPARAMS["temperature"],
             resume=False,
+            val_loader=val_loader,
+            genre_matrix=genre_matrix,
+            val_user_seen_dict=val_seen_dict,
+            eval_k=k,
+            eval_every=HYPERPARAMS["eval_every"],
             return_history=True,
         )
         history["run_id"] = run_id
@@ -129,7 +147,7 @@ def run_experiment(experiment, device):
             device=device,
             checkpoint_path=best_model_path,
             k=k,
-            user_seen_dict=user_seen_dict,
+            user_seen_dict=test_seen_dict,
         )
         result_rows.append(
             {
@@ -138,6 +156,8 @@ def run_experiment(experiment, device):
                 "split": split,
                 "k": k,
                 "final_train_loss": history["train_loss"][-1],
+                "best_val_ndcg": history["best_metric"],
+                "best_epoch": history["best_epoch"],
                 "best_checkpoint_path": best_model_path,
                 **metrics,
             }

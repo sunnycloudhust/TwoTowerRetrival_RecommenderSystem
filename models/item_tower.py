@@ -10,9 +10,11 @@ class ItemTower(nn.Module):
 
         self.mlp = nn.Sequential(
             nn.Linear(64 + 16, 128),
-            nn.ReLU(),
+            nn.LayerNorm(128),
+            nn.GELU(),
             nn.Dropout(0.2),
-            nn.Linear(128, 64) 
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
         )
 
     def forward(self, movie_id, movie_genres):

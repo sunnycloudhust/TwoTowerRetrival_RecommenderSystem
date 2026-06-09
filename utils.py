@@ -34,13 +34,23 @@ def build_model(preprocessor, device):
     return model.to(device)
 
 
-def build_user_seen_dict(train_df):
+def split_train_validation(train_df):
+    group_sizes = train_df.groupby("user_id")["user_id"].transform("size")
+    eligible_df = train_df[group_sizes >= 2]
+    val_indices = eligible_df.groupby("user_id", sort=False).tail(1).index
+    val_df = train_df.loc[val_indices].copy().reset_index(drop=True)
+    train_df = train_df.drop(index=val_indices).reset_index(drop=True)
+    return train_df, val_df
+
+
+def build_user_seen_dict(*dataframes):
     user_seen_dict = {}
-    for user_id, group in train_df.groupby("user_id"):
-        seen_movies = set(group["target_movie"].tolist())
-        for history in group["history"]:
-            seen_movies.update(movie_id for movie_id in history if movie_id != 0)
-        user_seen_dict[user_id] = seen_movies
+    for dataframe in dataframes:
+        for user_id, group in dataframe.groupby("user_id"):
+            seen_movies = user_seen_dict.setdefault(user_id, set())
+            seen_movies.update(group["target_movie"].tolist())
+            for history in group["history"]:
+                seen_movies.update(movie_id for movie_id in history if movie_id != 0)
     return user_seen_dict
 
 
@@ -79,6 +89,8 @@ def write_metrics_csv(rows, output_path, k):
         "split",
         "k",
         "final_train_loss",
+        "best_val_ndcg",
+        "best_epoch",
         "best_checkpoint_path",
         *metric_names,
     ]
