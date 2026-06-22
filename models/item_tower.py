@@ -21,17 +21,15 @@ class ItemTower(nn.Module):
         """
         Args:
             movie_id: Tensor (B,)
-            movie_genres: Tensor (B, max_genres) truy xuất từ genre_matrix
+            movie_genres: Tensor (B, max_genres) from genre_matrix.
         """
-        id_vector = self.movie_emb(movie_id) # (B, 64)
+        id_vector = self.movie_emb(movie_id)
         
-        # Masked Pooling cho Genres (Gộp các véc-tơ thể loại của phim)
-        g_emb = self.genre_emb(movie_genres) # (B, max_genres, 16)
+        g_emb = self.genre_emb(movie_genres)
         mask = (movie_genres != 0).float().unsqueeze(-1)
-        genre_vector = (g_emb * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1) # (B, 16)
+        genre_vector = (g_emb * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
         
-        # Nối ID phim và Thuộc tính phim
-        item_features = torch.cat([id_vector, genre_vector], dim=1) # (B, 80)
+        item_features = torch.cat([id_vector, genre_vector], dim=1)
         item_vector = self.mlp(item_features)
         
         return F.normalize(item_vector, p=2, dim=1)

@@ -35,31 +35,30 @@ def compute_all_metrics_optimized(targets, topk_indices, k=20):
 
 def compute_topk_batched(user_vecs, item_vecs, k=20, batch_size=512, seen_items=None):
     """
-    Tính Top-K bằng Dot Product trên toàn bộ kho phim.
+    Compute Top-K items with dot-product retrieval.
     
     Args:
-        seen_items: list[set] — seen_items[i] là tập movie_id user i đã tương tác.
-                    Nếu truyền vào, các phim này bị loại khỏi kết quả Top-K.
+        seen_items: Optional list of item-id sets to exclude per user.
     """
     num_users  = user_vecs.size(0)
-    item_vecs_t = item_vecs.T           # (64, num_movies) — transpose 1 lần dùng nhiều
+    item_vecs_t = item_vecs.T
     topk_list  = []
 
     with torch.no_grad():
         for start in range(0, num_users, batch_size):
             end         = min(start + batch_size, num_users)
-            user_batch  = user_vecs[start:end]                          # (B, 64)
-            batch_scores = torch.matmul(user_batch, item_vecs_t)        # (B, num_movies)
+            user_batch  = user_vecs[start:end]
+            batch_scores = torch.matmul(user_batch, item_vecs_t)
 
             if seen_items is not None:
                 for local_i, global_i in enumerate(range(start, end)):
                     for seen_id in seen_items[global_i]:
                         batch_scores[local_i, seen_id] = float("-inf")
 
-            _, batch_topk = torch.topk(batch_scores, k=k, dim=-1)      # (B, k)
+            _, batch_topk = torch.topk(batch_scores, k=k, dim=-1)
             topk_list.append(batch_topk.cpu())
 
-    return torch.cat(topk_list, dim=0).numpy()                         # (num_users, k)
+    return torch.cat(topk_list, dim=0).numpy()
 
 
 
@@ -74,7 +73,6 @@ def evaluate(
     verbose=True,
 ):
 
-    # 1. Load checkpoint 
     if checkpoint_path is not None:
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         state_dict = checkpoint["model_state"] if "model_state" in checkpoint else checkpoint
@@ -94,9 +92,6 @@ def evaluate(
     
     base_model = model.module if isinstance(model, nn.DataParallel) else model
 
-    # -----------------------------------------------------------------------
-    # 2. Xây dựng embedding cho TOÀN BỘ kho phim
-    # -----------------------------------------------------------------------
     if verbose:
         print(f"\n[1/3] Trích xuất embedding kho phim...")
     num_movies      = genre_matrix.shape[0]
@@ -107,18 +102,14 @@ def evaluate(
     with torch.no_grad():
         for i in range(0, num_movies, 512):
             end_i    = min(i + 512, num_movies)
-            # Dùng base_model.item_tower thay vì model.item_tower
             item_vec = base_model.item_tower(
                 all_movie_ids[i:end_i],
                 all_movie_genres[i:end_i]
             )
             global_item_vecs.append(item_vec.cpu())
 
-    global_item_vecs = torch.cat(global_item_vecs, dim=0)   # (num_movies, 64)
+    global_item_vecs = torch.cat(global_item_vecs, dim=0)
 
-    # -----------------------------------------------------------------------
-    # 3. Trích xuất embedding user + thu thập seen_items
-    # -----------------------------------------------------------------------
     if verbose:
         print(f"[2/3] Trích xuất embedding người dùng tập Test...")
     all_user_vecs = []
@@ -150,16 +141,13 @@ def evaluate(
     user_vecs = torch.cat(all_user_vecs, dim=0)   
     targets   = torch.cat(all_targets,   dim=0).numpy()
 
-    # -----------------------------------------------------------------------
-    # 4. Tính Top-K và Metrics
-    # -----------------------------------------------------------------------
     if verbose:
         print(f"[3/3] Đang tính toán Top-{k} và Metrics...")
     topk_indices = compute_topk_batched(
         user_vecs,
         global_item_vecs,
         k=k,
-        seen_items=all_seen_items   # truyền seen_items vào để mask
+        seen_items=all_seen_items
     )
     metrics = compute_all_metrics_optimized(targets, topk_indices, k=k)
 

@@ -37,14 +37,11 @@ class UserTower(nn.Module):
         seq_emb = self.movie_emb(movie_hist) + self.pos_emb(positions)
         padding_mask = (movie_hist == 0)
 
-        # 3. Đi qua Transformer
         trans_out = self.transformer(seq_emb, src_key_padding_mask=padding_mask)
 
-        # 4. Masked Mean Pooling trên đầu ra của Transformer
         mask = (movie_hist != 0).float().unsqueeze(-1)
         hist = (trans_out * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
 
-        # 5. Gộp toàn bộ véc-tơ đặc trưng
         x = torch.cat([u, g, a, o, hist], dim=1)
         user_vector = self.mlp(x)
         

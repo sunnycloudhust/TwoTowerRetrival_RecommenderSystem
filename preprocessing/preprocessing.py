@@ -6,9 +6,8 @@ class Preprocessor:
     def __init__(self, seq_len=20, max_genres=5):
         """
         Args:
-            seq_len (int):    Độ dài tối đa chuỗi lịch sử xem phim.
-            max_genres (int): Số lượng thể loại tối đa mỗi phim (default sẽ bị
-                              override bởi tham số max_genres trong preprocess()).
+            seq_len (int): Maximum movie history length.
+            max_genres (int): Maximum number of genres stored per movie.
         """
         self.seq_len        = seq_len
         self.max_genres     = max_genres
@@ -22,9 +21,6 @@ class Preprocessor:
         self.num_genres = 0
         self.genre2id   = {}
 
-    # -----------------------------------------------------------------------
-    # Load raw data
-    # -----------------------------------------------------------------------
     def load_users_data(self, users_path):
         return pd.read_csv(
             users_path, sep="::", engine="python",
@@ -43,17 +39,12 @@ class Preprocessor:
             names=["user_id", "movie_id", "rating", "timestamp"]
         )
 
-    # -----------------------------------------------------------------------
-    # Genre matrix
-    # -----------------------------------------------------------------------
     def build_genre_matrix(self, movies_df, max_genres=5):
         """
-        Xử lý đa thể loại và tạo ma trận tra cứu (num_movies, max_genres).
-        Giá trị 0 là padding.
+        Build a padded movie-to-genre lookup matrix.
         """
         self.max_genres = max_genres
 
-        # Xây dựng từ điển genre → id (bắt đầu từ 1, 0 dành cho padding)
         unique_genres = set()
         for g_str in movies_df["genres"]:
             unique_genres.update(g_str.split("|"))
@@ -75,25 +66,18 @@ class Preprocessor:
 
         return genre_matrix
 
-    # -----------------------------------------------------------------------
-    # ID encoding
-    # -----------------------------------------------------------------------
     def encode_ids(self, ratings_df):
-        """Mã hóa User ID và Movie ID thành số nguyên liên tiếp."""
+        """Encode user and movie ids as consecutive integers."""
         ratings_df["user_id"]  = self.user_encoder.fit_transform(ratings_df["user_id"])
         self.num_users         = len(self.user_encoder.classes_)
 
-        # Movie ID dịch +1: ID 0 dành cho padding trong sequence
         ratings_df["movie_id"] = self.movie_encoder.fit_transform(ratings_df["movie_id"]) + 1
         self.num_movies        = len(self.movie_encoder.classes_) + 1
 
         return ratings_df
 
-    # -----------------------------------------------------------------------
-    # User features
-    # -----------------------------------------------------------------------
     def process_user_features(self, users_df):
-        """Mã hóa các thuộc tính phụ của User."""
+        """Encode side features for users kept in the ratings data."""
         users             = users_df[users_df["user_id"].isin(self.user_encoder.classes_)].copy()
         users["user_id"]  = self.user_encoder.transform(users["user_id"])
         users["gender"]   = self.gender_encoder.fit_transform(users["gender"])
@@ -101,26 +85,15 @@ class Preprocessor:
         users["occupation"] = self.occ_encoder.fit_transform(users["occupation"])
         return users[["user_id", "gender", "age", "occupation"]]
 
-    # -----------------------------------------------------------------------
-    # Sequence padding
-    # -----------------------------------------------------------------------
     def pad_sequence(self, seq):
-        """Pre-padding về độ dài seq_len, padding value = 0."""
+        """Left-pad a sequence to seq_len with padding id 0."""
         if len(seq) >= self.seq_len:
             return seq[-self.seq_len:]
         return [0] * (self.seq_len - len(seq)) + seq
 
-    # -----------------------------------------------------------------------
-    # Sequential data generation  (Leave-One-Out)
-    # -----------------------------------------------------------------------
     def generate_sequential_data(self, ratings_df):
         """
-        Tạo train/test samples theo chuẩn Leave-One-Out:
-        - Train: tất cả vị trí 1..n-2
-        - Test:  vị trí cuối cùng (n-1)
-        
-        Chỉ giữ rating >= 3 làm tương tác tích cực.
-        User có < 3 tương tác bị loại (không đủ để tạo ít nhất 1 train + 1 test sample).
+        Generate leave-one-out samples from positive interactions.
         """
         pos_ratings = (
             ratings_df[ratings_df["rating"] >= 3]
@@ -152,20 +125,11 @@ class Preprocessor:
 
         return pd.DataFrame(train_samples), pd.DataFrame(test_samples)
     
-    # -----------------------------------------------------------------------
-    # Random Split Generation (Non-Chronological)
-    # -----------------------------------------------------------------------
     def generate_random_split(self, ratings_df, test_size=0.2):
         """
-        Tạo train/test samples theo tỷ lệ 80-20 ngẫu nhiên, KHÔNG giữ trật tự thời gian:
-        - Xáo trộn (shuffle) các tương tác của user.
-        - 80% tương tác đầu tiên sau khi xáo trộn làm Train.
-        - 20% tương tác cuối cùng sau khi xáo trộn làm Test.
+        Generate train/test samples from a non-chronological random split.
         """
-        # Lọc tương tác tích cực
         pos_ratings = ratings_df[ratings_df["rating"] >= 3].copy()
-        
-        # Xáo trộn toàn bộ dữ liệu một cách ngẫu nhiên (bỏ qua timestamp)
         pos_ratings = pos_ratings.sample(frac=1, random_state=42).reset_index(drop=True)
 
         train_samples, test_samples = [], []
@@ -178,16 +142,13 @@ class Preprocessor:
             if n < 3:
                 continue
             
-            # Tính toán chỉ mục chia split
             split_idx = int(n * (1 - test_size))
             
-            # Đảm bảo ít nhất 1 train và 1 test cho mỗi user thỏa mãn (n >= 3)
             if split_idx == 0:
                 split_idx = 1
             elif split_idx == n:
                 split_idx = n - 1
 
-            # Tạo chuỗi "history" từ danh sách đã bị xáo trộn
             for i in range(1, n):
                 history_padded = self.pad_sequence(movie_ids[:i])
                 sample = {
@@ -197,7 +158,6 @@ class Preprocessor:
                     "rating":       ratings[i],
                 }
                 
-                # Chia tập test_size (20% sau) và train (80% trước)
                 if i >= split_idx:
                     test_samples.append(sample)
                 else:
@@ -205,41 +165,25 @@ class Preprocessor:
 
         return pd.DataFrame(train_samples), pd.DataFrame(test_samples)
 
-    # -----------------------------------------------------------------------
-    # Main entry point
-    # -----------------------------------------------------------------------
     def preprocess(self, random_split, ratings_path, users_path, movies_path, max_genres=5):
         """
-        Hàm thực thi chính.
-
-        Args:
-            max_genres (int): Truyền từ HYPERPARAMS để đồng bộ với toàn bộ pipeline.
-                              --- FIX: Nhận tham số thay vì hardcode bên trong ---
-
-        Returns:
-            train_df, test_df, genre_matrix
+        Run the full preprocessing pipeline.
         """
-        # 1. Load
         ratings_raw = self.load_ratings_data(ratings_path)
         users_raw   = self.load_users_data(users_path)
         movies_raw  = self.load_movies_data(movies_path)
 
-        # 2. Encode IDs
         ratings_encoded = self.encode_ids(ratings_raw)
 
-        # 3. Genre matrix  — dùng max_genres từ tham số, không hardcode
         genre_matrix = self.build_genre_matrix(movies_raw, max_genres=max_genres)
 
-        # 4. User features
         users_processed = self.process_user_features(users_raw)
 
-        # 5. Train / Test split
         if random_split:
             train_df, test_df = self.generate_random_split(ratings_encoded)
         else:
             train_df, test_df = self.generate_sequential_data(ratings_encoded)
         
-        # 6. Merge side info
         train_df = train_df.merge(users_processed, on="user_id", how="left")
         test_df  = test_df.merge(users_processed,  on="user_id", how="left")
 
